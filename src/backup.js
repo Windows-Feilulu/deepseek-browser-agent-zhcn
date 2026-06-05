@@ -5,11 +5,6 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-const BACKUP_BASE_DIR = path.join(os.homedir(), '.deepseek-agent-zhcn', 'backups');
-
-// 确保备份目录存在
-fs.mkdirSync(BACKUP_BASE_DIR, { recursive: true });
-
 let currentSessionId = null;
 let currentSessionDir = null;
 
@@ -19,7 +14,9 @@ let currentSessionDir = null;
  */
 function setSessionId(sessionId) {
   currentSessionId = sessionId;
-  currentSessionDir = path.join(BACKUP_BASE_DIR, sessionId);
+  // 备份目录改为当前命令执行目录下的 deepseek-agent-backups 子目录
+  const baseDir = path.join(process.cwd(), '.deepseek-agent-backups');
+  currentSessionDir = path.join(baseDir, sessionId);
   fs.mkdirSync(currentSessionDir, { recursive: true });
 }
 
