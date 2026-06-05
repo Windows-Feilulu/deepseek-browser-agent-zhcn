@@ -269,7 +269,22 @@ const TOOLS = {
       const newContent = newLines.join('\n');
       writeFileNormalized(abs, newContent);
 
-      return `✓ 已将 ${filePath} 的第 ${start_line}–${end_line} 行替换为提供的内容`;
+      // 确定显示的行范围（修改行前后各10行，但不超出文件范围）
+      const totalNewLines = newLines.length;
+      let displayStart = Math.max(1, start_line - 10);
+      let displayEnd = Math.min(totalNewLines, end_line + 10);
+      if (displayStart > displayEnd) {
+        displayStart = displayEnd;
+      }
+
+      const contextLines = [];
+      for (let i = displayStart - 1; i < displayEnd; i++) {
+        contextLines.push(`${i + 1}:${newLines[i]}`);
+      }
+      const context = contextLines.join('\n');
+
+      const message = `✓ 已将 ${filePath} 的第 ${start_line}–${end_line} 行替换为提供的内容\n\n修改后的上下文 (第 ${displayStart}–${displayEnd} 行):\n${truncate(context)}`;
+      return message;
     },
   },
 
