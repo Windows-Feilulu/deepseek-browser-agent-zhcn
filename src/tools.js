@@ -36,11 +36,6 @@ function writeFileNormalized(filePath, content) {
   fs.writeFileSync(filePath, toCRLF(content), 'utf8');
 }
 
-/** 以 CRLF 换行符追加内容到文件 */
-function appendFileNormalized(filePath, content) {
-  fs.appendFileSync(filePath, toCRLF(content), 'utf8');
-}
-
 /** 截断过长的字符串，防止超出上下文窗口 */
 function truncate(str, max = config.MAX_OUTPUT_LENGTH) {
   if (!str) return '';
@@ -78,6 +73,11 @@ function escapePS(str) {
   if (typeof str !== 'string') return String(str);
   // 将单引号替换为两个单引号（PowerShell 转义规则）
   return str.replace(/'/g, "''");
+}
+
+/** 转义正则表达式中的特殊字符 */
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─────────────────────────────────────────────
@@ -141,82 +141,135 @@ const TOOLS = {
     },
   },
 
-  // ── 追加到文件 ──────────────────────────────────────────────────────────
-  append_to_file: {
-    description: '在现有文件末尾追加文本（如果文件不存在则创建）。',
-    parameters: {
-      path    : { type: 'string', required: true, description: '文件路径' },
-      content : { type: 'string', required: true, description: '要追加的文本' },
-    },
-    async execute({ path: filePath, content }) {
-      const abs = resolve(filePath);
-      // 修改前创建备份（如果文件存在）
-      try {
-        await backup.createBackupWithMetadata(abs, 'append_to_file');
-      } catch (err) {
-        // 备份失败仅记录日志，不中断操作
-        console.error(`${filePath} 备份失败:`, err);
-      }
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      appendFileNormalized(abs, content);
-      return `✓ 已追加 ${formatBytes(Buffer.byteLength(toCRLF(content), 'utf8'))} 到 ${filePath}`;
-    },
-  },
-
-  // ── 文件查找替换 ────────────────────────────────────────────────────────
-  replace_in_file: {
-    description: '在文件中查找并替换文本。支持正则表达式。',
+  // ── 文本替换（区分大小写，全部替换）────────────────────────────────────
+  replace_text: {
+    description: '在文件中查找文本并全部替换。默认区分大小写。',
     parameters: {
       path           : { type: 'string',  required: true,  description: '文件路径' },
-      find           : { type: 'string',  required: true,  description: '要查找的文本' },
+      text           : { type: 'string',  required: true,  description: '要搜索的文本' },
       replace        : { type: 'string',  required: true,  description: '替换文本' },
-      use_regex      : { type: 'boolean', required: false, description: '将"查找"视为正则表达式（默认: false）' },
-      all_occurrences: { type: 'boolean', required: false, description: '替换所有匹配项（默认: true）' },
+      case_sensitive : { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
     },
-    async execute({ path: filePath, find, replace, use_regex = false, all_occurrences = true }) {
+    async execute({ path: filePath, text, replace, case_sensitive = true }) {
       const abs = resolve(filePath);
       // 修改前创建备份
       try {
-        await backup.createBackupWithMetadata(abs, 'replace_in_file');
+        await backup.createBackupWithMetadata(abs, 'replace_text');
       } catch (err) {
-        // 备份失败仅记录日志，不中断操作
         console.error(`${filePath} 备份失败:`, err);
       }
-      // 以 LF 换行符读取当前内容
+
+      // 以 LF 读取
       let content = readFileNormalized(abs);
       const original = content;
-
-      // 将查找和替换字符串归一化为 LF 以匹配 LF 内容
-      const normalizedFind = toLF(find);
+      const normalizedText = toLF(text);
       const normalizedReplace = toLF(replace);
 
-      if (use_regex) {
-        const re = new RegExp(normalizedFind, all_occurrences ? 'g' : '');
-        content = content.replace(re, normalizedReplace);
-      } else if (all_occurrences) {
-        content = content.split(normalizedFind).join(normalizedReplace);
-      } else {
-        content = content.replace(normalizedFind, normalizedReplace);
-      }
-
-      if (content === original) {
-        return `⚠ 在 ${filePath} 中未找到 "${find}" 的匹配项`;
-      }
+      // 转义搜索文本，构造正则
+      const escaped = escapeRegExp(normalizedText);
+      const flags = case_sensitive ? 'g' : 'gi';
+      const regex = new RegExp(escaped, flags);
 
       // 统计匹配次数
-      let count;
-      if (use_regex) {
-        const re = new RegExp(normalizedFind, 'g');
-        count = (original.match(re) || []).length;
-      } else {
-        const escapedFind = normalizedFind.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(escapedFind, 'g');
-        count = (original.match(re) || []).length;
+      const matches = original.match(regex);
+      const count = matches ? matches.length : 0;
+
+      if (count === 0) {
+        return `⚠ 在 ${filePath} 中未找到 "${text}" 的匹配项`;
       }
 
-      // 以 CRLF 换行符写回
+      // 全部替换，避免 $ 特殊符号干扰
+      content = original.replace(regex, () => normalizedReplace);
+
       writeFileNormalized(abs, content);
-      return `✓ 在 ${filePath} 中替换了 ${count} 处 "${find}"`;
+      return `✓ 在 ${filePath} 中替换了 ${count} 处 "${text}"`;
+    },
+  },
+
+  // ── 正则替换（区分大小写，全部替换）────────────────────────────────────
+  replace_regex: {
+    description: '使用正则表达式在文件中查找并全部替换。默认区分大小写。正则不应包含标志（由工具自动添加 g 与 i）。',
+    parameters: {
+      path           : { type: 'string',  required: true,  description: '文件路径' },
+      regex          : { type: 'string',  required: true,  description: '正则表达式（不含标志）' },
+      replace        : { type: 'string',  required: true,  description: '替换文本' },
+      case_sensitive : { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
+    },
+    async execute({ path: filePath, regex: pattern, replace, case_sensitive = true }) {
+      const abs = resolve(filePath);
+      try {
+        await backup.createBackupWithMetadata(abs, 'replace_regex');
+      } catch (err) {
+        console.error(`${filePath} 备份失败:`, err);
+      }
+
+      let content = readFileNormalized(abs);
+      const original = content;
+      const normalizedReplace = toLF(replace);
+
+      // 构造全局正则，根据 case_sensitive 决定是否添加 i 标志
+      const flags = case_sensitive ? 'g' : 'gi';
+      const regex = new RegExp(pattern, flags);
+
+      // 统计匹配次数
+      const matches = original.match(regex);
+      const count = matches ? matches.length : 0;
+
+      if (count === 0) {
+        return `⚠ 在 ${filePath} 中未找到正则 "${pattern}" 的匹配项`;
+      }
+
+      // 全部替换，避免 $ 符号问题
+      content = original.replace(regex, () => normalizedReplace);
+
+      writeFileNormalized(abs, content);
+      return `✓ 在 ${filePath} 中替换了 ${count} 处匹配 "${pattern}"`;
+    },
+  },
+
+  // ── 行范围替换 ────────────────────────────────────────────────────────
+  replace_lines: {
+    description: '将文件中从 start_line 到 end_line（包含）的行替换为指定内容。',
+    parameters: {
+      path       : { type: 'string', required: true,  description: '文件路径' },
+      start_line : { type: 'number', required: true,  description: '起始行号（从1开始）' },
+      end_line   : { type: 'number', required: true,  description: '结束行号（包含）' },
+      replace    : { type: 'string', required: true,  description: '替换内容（可多行）' },
+    },
+    async execute({ path: filePath, start_line, end_line, replace }) {
+      const abs = resolve(filePath);
+      try {
+        await backup.createBackupWithMetadata(abs, 'replace_lines');
+      } catch (err) {
+        console.error(`${filePath} 备份失败:`, err);
+      }
+
+      let content = readFileNormalized(abs);
+      const lines = content.split('\n');
+      const totalLines = lines.length;
+
+      // 验证行号
+      if (start_line < 1 || end_line > totalLines || start_line > end_line) {
+        throw new Error(`无效的行范围：start_line=${start_line}, end_line=${end_line}，文件共 ${totalLines} 行`);
+      }
+
+      const startIdx = start_line - 1;
+      const endIdx = end_line - 1;
+
+      // 将替换内容归一化为 LF 并拆分为行
+      const replacementLines = toLF(replace).split('\n');
+
+      // 构造新行数组
+      const newLines = [
+        ...lines.slice(0, startIdx),
+        ...replacementLines,
+        ...lines.slice(endIdx + 1)
+      ];
+
+      const newContent = newLines.join('\n');
+      writeFileNormalized(abs, newContent);
+
+      return `✓ 已将 ${filePath} 的第 ${start_line}–${end_line} 行替换为提供的内容`;
     },
   },
 
