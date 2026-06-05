@@ -297,22 +297,39 @@ class DeepSeekAgent {
   }
 
   _getWorkingDirListing() {
-    try {
-      const result = execSync(
-        `find . -maxdepth 3 \\
-          -not -path '*/node_modules/*' \\
-          -not -path '*/.git/*' \\
-          -not -path '*/dist/*' \\
-          -not -path '*/.next/*' \\
-          -not -path '*/build/*' \\
-          -not -name '*.lock' \\
-          | sort | head -80`,
-        { cwd: config.WORKING_DIR, encoding: 'utf8', timeout: 5_000 }
-      ).trim();
-      return result || '(空目录)';
-    } catch {
-      return '(无法读取目录)';
-    }
+    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build']);
+    const results = [];
+
+    const walk = (dirRel, depth) => {
+      if (depth > 3) return;
+      let entries;
+      try {
+        entries = fs.readdirSync(path.join(config.WORKING_DIR, dirRel), { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        // 构建相对路径，统一使用 POSIX 分隔符并加上 ./ 前缀
+        const entryRel = './' + path.join(dirRel, entry.name).split(path.sep).join('/');
+        if (entry.isDirectory()) {
+          // 完全跳过忽略的目录（不列出也不递归）
+          if (ignoreDirs.has(entry.name)) continue;
+          results.push(entryRel);
+          walk(entryRel, depth + 1);
+        } else if (entry.isFile()) {
+          // 跳过 *.lock 文件
+          if (entry.name.endsWith('.lock')) continue;
+          results.push(entryRel);
+        } else {
+          // 符号链接等其他类型仍加入
+          results.push(entryRel);
+        }
+      }
+    };
+
+    walk('.', 1);            // 从工作目录直接子项开始，深度 1
+    results.sort();          // 等效于 sort
+    return results.slice(0, 80).join('\n') || '(空目录)';
   }
 
   async _saveConversationLog(task, finalResponse) {
