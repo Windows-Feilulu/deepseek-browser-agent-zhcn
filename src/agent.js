@@ -297,7 +297,7 @@ class DeepSeekAgent {
   }
 
   _getWorkingDirListing() {
-    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build']);
+    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build', '.deepseek-agent-zhcn-backups', '.vs', '.vscode', 'backups', 'depend', 'lib', '.qm', '.qtcreator', '.uploads', 'debug', 'release']);
     const results = [];
 
     const walk = (dirRel, depth) => {
@@ -314,7 +314,7 @@ class DeepSeekAgent {
         if (entry.isDirectory()) {
           // 完全跳过忽略的目录（不列出也不递归）
           if (ignoreDirs.has(entry.name)) continue;
-          results.push(entryRel);
+          // results.push(entryRel);
           walk(entryRel, depth + 1);
         } else if (entry.isFile()) {
           // 跳过 *.lock 文件
