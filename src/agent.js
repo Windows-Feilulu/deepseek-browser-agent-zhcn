@@ -50,14 +50,6 @@ class DeepSeekAgent {
     this._running   = true;
     const maxIter   = config.MAX_ITERATIONS;
 
-    // ── 开始前备份用户任务 ───────────────────────────────────
-    try {
-      await backup.backupUserPrompt(task);
-      logger.dim(`用户提示已备份到会话: ${backup.getBackupDir()}`);
-    } catch (err) {
-      logger.warn(`备份用户提示失败: ${err.message}`);
-    }
-
     // ── 1. 快照工作目录 ──────────────────────────────────────
     const dirListing = this._getWorkingDirListing();
 
