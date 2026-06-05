@@ -227,67 +227,6 @@ const TOOLS = {
     },
   },
 
-  // ── 行范围替换 ────────────────────────────────────────────────────────
-  replace_lines: {
-    description: '将文件中从 start_line 到 end_line（包含）的行替换为指定内容。',
-    parameters: {
-      path       : { type: 'string', required: true,  description: '文件路径' },
-      start_line : { type: 'number', required: true,  description: '起始行号（从1开始）' },
-      end_line   : { type: 'number', required: true,  description: '结束行号（包含）' },
-      replace    : { type: 'string', required: true,  description: '替换内容（可多行）' },
-    },
-    async execute({ path: filePath, start_line, end_line, replace }) {
-      const abs = resolve(filePath);
-      try {
-        await backup.createBackupWithMetadata(abs, 'replace_lines');
-      } catch (err) {
-        console.error(`${filePath} 备份失败:`, err);
-      }
-
-      let content = readFileNormalized(abs);
-      const lines = content.split('\n');
-      const totalLines = lines.length;
-
-      // 验证行号
-      if (start_line < 1 || end_line > totalLines || start_line > end_line) {
-        throw new Error(`无效的行范围：start_line=${start_line}, end_line=${end_line}，文件共 ${totalLines} 行`);
-      }
-
-      const startIdx = start_line - 1;
-      const endIdx = end_line - 1;
-
-      // 将替换内容归一化为 LF 并拆分为行
-      const replacementLines = toLF(replace).split('\n');
-
-      // 构造新行数组
-      const newLines = [
-        ...lines.slice(0, startIdx),
-        ...replacementLines,
-        ...lines.slice(endIdx + 1)
-      ];
-
-      const newContent = newLines.join('\n');
-      writeFileNormalized(abs, newContent);
-
-      // 确定显示的行范围（修改行前后各10行，但不超出文件范围）
-      const totalNewLines = newLines.length;
-      let displayStart = Math.max(1, start_line - 10);
-      let displayEnd = Math.min(totalNewLines, end_line + 10);
-      if (displayStart > displayEnd) {
-        displayStart = displayEnd;
-      }
-
-      const contextLines = [];
-      for (let i = displayStart - 1; i < displayEnd; i++) {
-        contextLines.push(`${i + 1}:${newLines[i]}`);
-      }
-      const context = contextLines.join('\n');
-
-      const message = `✓ 已将 ${filePath} 的第 ${start_line}–${end_line} 行替换为提供的内容\n\n修改后的上下文 (第 ${displayStart}–${displayEnd} 行):\n${truncate(context)}`;
-      return message;
-    },
-  },
-
   // ── 删除文件 ─────────────────────────────────────────────────────────────
   delete_file: {
     description: '永久删除文件。',
