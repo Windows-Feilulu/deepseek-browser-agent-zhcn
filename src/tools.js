@@ -424,40 +424,56 @@ const TOOLS = {
     },
   },
 
-  // ── 运行命令 ─────────────────────────────────────────────────────────────
-  run_command: {
-    description: '执行 shell 命令并返回输出。默认在工作目录中运行。',
-    parameters: {
-      command : { type: 'string',  required: true,  description: '要运行的 shell 命令' },
-      cwd     : { type: 'string',  required: false, description: '命令的工作目录' },
-      timeout : { type: 'number',  required: false, description: '超时时间（毫秒，默认: 60000）' },
-      env     : { type: 'object',  required: false, description: '额外的环境变量（键值对）' },
-    },
-    async execute({ command, cwd, timeout = 60_000, env = {} }) {
-      const workDir = cwd ? resolve(cwd) : config.WORKING_DIR;
-
-      try {
-        const output = execSync(command, {
-          cwd         : workDir,
-          encoding    : 'utf8',
-          timeout,
-          maxBuffer   : 20 * 1024 * 1024,
-          env         : { ...process.env, ...env },
-          stdio       : ['pipe', 'pipe', 'pipe'],
-        });
-        const result = (output || '').trim();
-        return truncate(result || '(命令执行完成，无输出)');
-      } catch (err) {
-        const stdout = (err.stdout || '').trim();
-        const stderr = (err.stderr || '').trim();
-        const combined = [
-          stdout && `标准输出:\n${stdout}`,
-          stderr && `标准错误:\n${stderr}`,
-        ].filter(Boolean).join('\n\n');
-        throw new Error(`命令失败（退出码 ${err.status}）:\n${truncate(combined || err.message)}`);
-      }
-    },
+// run_command 工具修改部分：添加文件读取检测
+run_command: {
+  description: '执行 shell 命令并返回输出。默认在工作目录中运行。',
+  parameters: {
+    command : { type: 'string',  required: true,  description: '要运行的 shell 命令' },
+    cwd     : { type: 'string',  required: false, description: '命令的工作目录' },
+    timeout : { type: 'number',  required: false, description: '超时时间（毫秒，默认: 60000）' },
+    env     : { type: 'object',  required: false, description: '额外的环境变量（键值对）' },
   },
+  async execute({ command, cwd, timeout = 60_000, env = {} }) {
+    // ========== 新增：检测是否试图读取文件内容 ==========
+    const fileReadPatterns = [
+      /Get-Content/i,
+      /\bcat\s+/i,
+      /\btype\s+/i,
+      /\bmore\s+/i,
+      /\btail\s+/i,
+      /\bgc\s+/i,
+      /<\s*["']?\w+["']?/,
+    ];
+    for (const pattern of fileReadPatterns) {
+      if (pattern.test(command)) {
+        throw new Error('禁止通过命令行读取文件内容。请使用 read_file 工具代替。');
+      }
+    }
+    // ========== 检测结束 ==========
+
+    const workDir = cwd ? resolve(cwd) : config.WORKING_DIR;
+    try {
+      const output = execSync(command, {
+        cwd         : workDir,
+        encoding    : 'utf8',
+        timeout,
+        maxBuffer   : 20 * 1024 * 1024,
+        env         : { ...process.env, ...env },
+        stdio       : ['pipe', 'pipe', 'pipe'],
+      });
+      const result = (output || '').trim();
+      return truncate(result || '(命令执行完成，无输出)');
+    } catch (err) {
+      const stdout = (err.stdout || '').trim();
+      const stderr = (err.stderr || '').trim();
+      const combined = [
+        stdout && `标准输出:\n${stdout}`,
+        stderr && `标准错误:\n${stderr}`,
+      ].filter(Boolean).join('\n\n');
+      throw new Error(`命令失败（退出码 ${err.status}）:\n${truncate(combined || err.message)}`);
+    }
+  },
+},
 
   // ── 查找文件 ──────────────────────────────────────────────────────────────
   find_files: {
