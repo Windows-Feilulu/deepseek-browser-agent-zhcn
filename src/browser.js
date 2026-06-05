@@ -1,202 +1,263 @@
-// src/browser.js — Playwright 浏览器控制器（中文版）
+// src/browser.js — Playwright 控制器 for chat.deepseek.com（修复版）
 'use strict';
 
 const { chromium } = require('playwright');
+const path         = require('path');
 const config       = require('./config');
 const logger       = require('./logger');
 
-// ─────────────────────────────────────────────
-//  CSS 选择器（根据 DeepSeek UI 更新）
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  选择器库 — 按可能性排序，提供回退方案
+//  绝不依赖单一选择器，因为 DeepSeek 的 UI 可能会变
+// ─────────────────────────────────────────────────────────────────────────────
 
 const SEL = {
-  // 聊天输入框 — 使用多个候选选择器
-  chatInput  : 'textarea, [contenteditable="true"], .chat-input, .input-box',
-  // 发送按钮
-  sendButton : 'button[type="submit"], .send-btn, [aria-label="Send"], button:has-text("Send")',
-  // 停止按钮（生成时显示）
-  stopButton : 'button:has-text("Stop"), .stop-btn, [aria-label="Stop"]',
-  // 新建聊天按钮
-  newChat    : 'button:has-text("New Chat"), .new-chat-btn, [aria-label="New Chat"]',
+  // 用户输入消息的文本框
+  chatInput: [
+    '#chat-input',
+    'textarea[placeholder]',
+    'textarea',
+    '[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"]',
+  ],
+
+  // 提交消息的按钮
+  sendButton: [
+    'button[aria-label*="Send" i]',
+    'button[aria-label*="send" i]',
+    '[data-testid="send-button"]',
+    'button[type="submit"]',
+    '[class*="send-btn"]',
+    '[class*="sendBtn"]',
+    '[class*="send-button"]',
+  ],
+
+  // “停止生成”按钮 — 在流式响应时可见
+  stopButton: [
+    'button[aria-label*="Stop" i]',
+    '[aria-label*="stop generating" i]',
+    '[data-testid="stop-button"]',
+    '[class*="stop-btn"]',
+    '[class*="stopBtn"]',
+  ],
+
+  // 侧边栏中的“新建聊天”按钮
+  newChat: [
+    'button[aria-label*="New chat" i]',
+    'button[aria-label*="New conversation" i]',
+    'a[href="/"][aria-label]',
+    '[data-testid="new-chat"]',
+    '[class*="new-chat"]',
+    '[class*="newChat"]',
+  ],
+
+  // 主要聊天消息容器
+  messageContainer: [
+    '[class*="chat-content"]',
+    '[class*="message-list"]',
+    '[class*="conversation"]',
+    'main',
+  ],
 };
 
-// ─────────────────────────────────────────────
-//  浏览器控制器
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  DeepSeekBrowser 类
+// ─────────────────────────────────────────────────────────────────────────────
 
 class DeepSeekBrowser {
   constructor() {
-    this.browser   = null;
-    this.page      = null;
-    this._lastText = '';
-    this._stableTimer = null;
+    this.context  = null;
+    this.page     = null;
+    this._closed  = false;
   }
 
-  // ── 启动 ──────────────────────────────────────────────────────────────────
+  // ── 生命周期 ──────────────────────────────────────────────────────────────
 
   async launch() {
     logger.info('正在使用持久化会话启动浏览器...');
-    this.browser = await chromium.launchPersistentContext(config.SESSION_DIR, {
-      headless : config.HEADLESS,
-      args     : [
+
+    const sessionDir = path.resolve(config.SESSION_DIR);
+
+    this.context = await chromium.launchPersistentContext(sessionDir, {
+      headless      : config.HEADLESS,
+      viewport      : { width: 1280, height: 900 },
+      userAgent     : [
+        'Mozilla/5.0 (X11; Linux x86_64)',
+        'AppleWebKit/537.36 (KHTML, like Gecko)',
+        'Chrome/124.0.0.0 Safari/537.36',
+      ].join(' '),
+      args: [
         '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--disable-default-apps',
         '--no-sandbox',
         '--disable-setuid-sandbox',
       ],
+      ignoreDefaultArgs: ['--enable-automation'],
     });
 
-    // 如果上下文已有页面则复用，否则新建
-    const pages = this.browser.pages();
-    this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
+    // 复用已有页面或创建新页面
+    const pages   = this.context.pages();
+    this.page     = pages.length > 0 ? pages[0] : await this.context.newPage();
 
-    // 设置视口
-    await this.page.setViewportSize({ width: 1280, height: 900 });
-
-    // 拦截图片/字体以加快速度
-    await this.page.route('**/*', route => {
-      const type = route.request().resourceType();
-      if (['image', 'font', 'media'].includes(type)) {
-        route.abort();
-      } else {
-        route.continue();
-      }
+    // 屏蔽自动化特征
+    await this.page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
-    // 导航到 DeepSeek
-    try {
-      await this.page.goto(config.DEEPSEEK_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    } catch (err) {
-      logger.warn(`导航警告: ${err.message}`);
-    }
-
-    // 等待页面稳定
-    await this.page.waitForTimeout(3_000);
-
-    // 检查是否需要登录
-    const needsLogin = await this._needsLogin();
-    if (needsLogin && !config.HEADLESS) {
-      await this._promptLogin();
-    }
+    await this._navigate(config.DEEPSEEK_URL);
+    await this._ensureLoggedIn();
 
     logger.success('浏览器准备就绪！');
-    return this.page;
   }
-
-  // ── 关闭 ──────────────────────────────────────────────────────────────────
 
   async close() {
-    if (this._stableTimer) clearTimeout(this._stableTimer);
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page    = null;
-    }
+    if (this._closed) return;
+    this._closed = true;
+    try { await this.context?.close(); } catch {}
   }
 
-  // ── 新建聊天 ──────────────────────────────────────────────────────────
+  // ── 导航 ─────────────────────────────────────────────────────────────────
 
-  async newChat() {
-    // 点击新建聊天按钮（如果存在）
+  async _navigate(url) {
     try {
-      const btn = await this.page.$(SEL.newChat);
-      if (btn) {
-        await btn.click();
-        await this.page.waitForTimeout(1_500);
-        return;
-      }
-    } catch {
-      // 回退：直接导航
-    }
-
-    // 回退：直接导航到 DeepSeek 首页
-    try {
-      await this.page.goto(config.DEEPSEEK_URL, { waitUntil: 'domcontentloaded', timeout: 20_000 });
-      await this.page.waitForTimeout(2_000);
+      await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await this.page.waitForTimeout(1_500);
     } catch (err) {
       logger.warn(`导航警告: ${err.message}`);
     }
-
-    logger.dim('已启动新聊天会话');
   }
 
-  // ── 发送消息 ──────────────────────────────────────────────────────────
+  async newChat() {
+    try {
+      // 尝试点击侧边栏的“新建聊天”按钮
+      for (const sel of SEL.newChat) {
+        try {
+          const el = await this.page.$(sel);
+          if (el && await el.isVisible()) {
+            await el.click();
+            await this.page.waitForTimeout(1_000);
+            logger.dim('已启动新聊天会话');
+            return;
+          }
+        } catch {}
+      }
+    } catch {}
+
+    // 回退方案：导航到首页，通常会打开新聊天
+    await this._navigate(config.DEEPSEEK_URL);
+    logger.dim('已导航到 DeepSeek 首页（新聊天）');
+  }
+
+  // ── 登录处理 ─────────────────────────────────────────────────────────────
+
+  async _ensureLoggedIn() {
+    await this.page.waitForTimeout(2_000);
+
+    const needsLogin = await this.page.evaluate(() => {
+      const url = window.location.href;
+      const bodyText = document.body?.innerText || '';
+      return (
+        url.includes('/auth') ||
+        url.includes('/login') ||
+        url.includes('/sign') ||
+        bodyText.includes('Sign in') ||
+        bodyText.includes('Log in') ||
+        !!document.querySelector('input[type="password"]')
+      );
+    });
+
+    if (needsLogin) {
+      this._printLoginBanner();
+      await this._waitForEnter();
+      await this.page.waitForTimeout(2_000);
+    }
+  }
+
+  _printLoginBanner() {
+    console.log('');
+    logger.warn('╔══════════════════════════════════════════════╗');
+    logger.warn('║  🔐  需要登录                                ║');
+    logger.warn('║                                              ║');
+    logger.warn('║  1. 在浏览器窗口中登录 DeepSeek              ║');
+    logger.warn('║  2. 返回此处并按  回车  继续                 ║');
+    logger.warn('╚══════════════════════════════════════════════╝');
+    console.log('');
+  }
+
+  async _waitForEnter() {
+    return new Promise(resolve => {
+      const stdin   = process.stdin;
+      const wasRaw  = stdin.isRaw;
+      const wasPaused = !stdin.readable;
+
+      if (stdin.isTTY) stdin.setRawMode(false);
+      stdin.resume();
+
+      const handler = chunk => {
+        const s = chunk.toString();
+        if (s.includes('\n') || s.includes('\r')) {
+          stdin.removeListener('data', handler);
+          if (stdin.isTTY && wasRaw) stdin.setRawMode(true);
+          if (wasPaused)            stdin.pause();
+          resolve();
+        }
+      };
+
+      stdin.on('data', handler);
+    });
+  }
+
+  // ── 发送消息 ─────────────────────────────────────────────────────────────
 
   async sendMessage(text) {
-    const input = await this._findInputBox();
+    // 找到输入框
+    const { el, isTextarea } = await this._findInput();
 
-    // 聚焦并输入
-    await input.focus();
-    await input.fill('');
-    await input.fill(text);
+    // 点击聚焦
+    await el.click({ force: true });
+    await this.page.waitForTimeout(200);
 
-    // 短暂延迟让 UI 稳定
+    // 清空现有内容
+    await this.page.keyboard.press('Control+a');
+    await this.page.waitForTimeout(100);
+
+    if (isTextarea) {
+      // 标准 textarea — 使用 fill() 更可靠
+      await el.fill(text);
+    } else {
+      // contenteditable div — 使用 execCommand
+      await this.page.evaluate((element, content) => {
+        element.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete',    false, null);
+        document.execCommand('insertText', false, content);
+        element.dispatchEvent(new InputEvent('input', { bubbles: true, data: content }));
+      }, el, text);
+    }
+
     await this.page.waitForTimeout(config.SEND_DELAY);
 
-    // 按 Enter 发送
-    await input.press('Enter');
-
-    // 等待发送动画完成
-    await this.page.waitForTimeout(800);
-  }
-
-  // ── 等待回复 ──────────────────────────────────────────────────────────
-
-  async waitForResponse() {
-    const start = Date.now();
-    const maxWait = config.RESPONSE_TIMEOUT;
-    const stableDelay = config.STABLE_DELAY;
-
-    this._lastText = '';
-    let stableStart = null;
-
-    while (Date.now() - start < maxWait) {
-      // 获取当前回复文本
-      const currentText = await this._getLatestResponseText();
-
-      // 检查文本是否稳定
-      if (currentText !== this._lastText) {
-        this._lastText = currentText;
-        stableStart = Date.now();
-        this._showProgress(currentText);
-      } else if (stableStart && (Date.now() - stableStart >= stableDelay)) {
-        // 文本已稳定 — 返回
-        logger.clearLine();
-        return currentText;
-      }
-
-      // 检查是否仍在生成
-      const isGenerating = await this._isGenerating();
-      if (!isGenerating && currentText.length > 0) {
-        // 生成已停止且我们有文本 — 再等待稳定延迟
-        if (!stableStart) stableStart = Date.now();
-        if (Date.now() - stableStart >= stableDelay) {
-          logger.clearLine();
-          return currentText;
-        }
-      }
-
-      await this.page.waitForTimeout(500);
+    // 优先点击发送按钮，否则按 Enter
+    const clicked = await this._clickSendButton();
+    if (!clicked) {
+      // DeepSeek 默认 Enter 发送，Shift+Enter 换行
+      await this.page.keyboard.press('Enter');
     }
 
-    // 超时 — 返回我们已有的内容
-    logger.warn('回复可能延迟 — 继续等待...');
-    return this._lastText || '';
+    await this.page.waitForTimeout(500);
   }
 
-  // ── 内部辅助函数 ──────────────────────────────────────────────────────────
-
-  async _findInputBox() {
-    // 尝试多个选择器
-    const selectors = SEL.chatInput.split(',').map(s => s.trim());
-    for (const sel of selectors) {
-      const el = await this.page.$(sel);
-      if (el) return el;
+  async _findInput() {
+    for (const sel of SEL.chatInput) {
+      try {
+        const el = await this.page.waitForSelector(sel, { timeout: 4_000, state: 'visible' });
+        if (!el) continue;
+        const tagName          = await el.evaluate(e => e.tagName.toLowerCase());
+        const isContentEditable = await el.evaluate(e => e.isContentEditable);
+        return { el, isTextarea: tagName === 'textarea' && !isContentEditable };
+      } catch {}
     }
-
-    // 回退：查找任何内容可编辑元素
-    const fallback = await this.page.$('[contenteditable="true"]');
-    if (fallback) return fallback;
-
     throw new Error(
       '无法找到 DeepSeek 聊天输入框。\n' +
       '  → 确保页面已完全加载且你已登录。\n' +
@@ -205,136 +266,293 @@ class DeepSeekBrowser {
     );
   }
 
-  async _getLatestResponseText() {
-    try {
-      // 策略 1: 查找最新的助手消息
-      const messages = await this.page.$$eval(
-        '.message, .chat-message, [data-role="assistant"], .assistant-message, .bubble',
-        els => els.map(el => el.innerText || el.textContent)
-      );
-      if (messages.length > 0) {
-        return messages[messages.length - 1].trim();
+  async _clickSendButton() {
+    for (const sel of SEL.sendButton) {
+      try {
+        const el = await this.page.$(sel);
+        if (el && await el.isVisible() && await el.isEnabled()) {
+          await el.click();
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  // ── 等待响应 ─────────────────────────────────────────────────────────────
+
+  /**
+   * 等待 DeepSeek 完成生成并返回响应文本。
+   *
+   * 算法：
+   *  1. 记录当前页面上的助手消息数量。
+   *  2. 等待新消息出现（数量增加）。
+   *  3. 每 500ms 轮询最后一条消息的文本。
+   *  4. 当文本在 STABLE_DELAY 毫秒内未变化，且没有“停止/加载”指示器时 → 完成。
+   */
+  async waitForResponse() {
+    const timeout     = config.RESPONSE_TIMEOUT;
+    const stableDelay = config.STABLE_DELAY;
+    const start       = Date.now();
+
+    // ── 阶段1：等待新消息出现 ──────────────────────────────────────────
+    const initialCount = await this._getMessageCount();
+    let   appeared     = false;
+
+    while (Date.now() - start < 12_000) {
+      const count = await this._getMessageCount();
+      if (count > initialCount) { appeared = true; break; }
+      await this.page.waitForTimeout(400);
+    }
+
+    if (!appeared) logger.warn('响应可能延迟 — 继续等待...');
+
+    // ── 阶段2：等待文本稳定 ────────────────────────────────────────────
+    let lastText    = '';
+    let stableStart = null;
+    let dotCount    = 0;
+
+    while (Date.now() - start < timeout) {
+      const text = await this._extractLastMessage();
+
+      if (text !== lastText) {
+        lastText    = text;
+        stableStart = null;
+      } else if (text.length > 0) {
+        if (!stableStart) stableStart = Date.now();
+        else if (Date.now() - stableStart >= stableDelay) {
+          if (!await this._isGenerating()) break;  // 确认已完成
+          stableStart = null;                       // 仍在生成，重置
+        }
       }
 
-      // 策略 2: 从整个页面提取（回退）
-      const bodyText = await this.page.$eval('body', el => el.innerText);
-      const lines = bodyText.split('\n').filter(l => l.trim());
-      // 返回最后几行（可能包含回复）
-      return lines.slice(-20).join('\n');
-    } catch {
-      return '';
+      // 进度指示
+      dotCount = (dotCount + 1) % 4;
+      logger.thinking(`正在接收回复${'.'.repeat(dotCount)}  (${text.length} 字符)`);
+
+      await this.page.waitForTimeout(500);
     }
+
+    logger.clearLine();
+
+    const final = await this._extractLastMessage();
+    return this._cleanText(final);
   }
 
-  async _isGenerating() {
-    try {
-      // 检查停止按钮（生成时可见）
-      const stopBtn = await this.page.$(SEL.stopButton);
-      if (stopBtn) {
-        const visible = await stopBtn.isVisible();
-        if (visible) return true;
+  // ── DOM 提取 ───────────────────────────────────────────────────────────
+
+  /** 统计可见的“响应”块数量 */
+  async _getMessageCount() {
+    return await this.page.evaluate(() => {
+      const candidates = [
+        '[class*="assistant"][class*="message"]',
+        '[data-role="assistant"]',
+        '[class*="markdown-content"]',
+        '.ds-markdown',
+        '[class*="chat-message"]',
+        '[class*="message-bubble"]',
+      ];
+      for (const sel of candidates) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) return els.length;
       }
-
-      // 检查加载/生成指示器
-      const indicators = await this.page.$$eval(
-        '.loading, .generating, .typing, .spinner, [data-loading="true"]',
-        els => els.length
-      );
-      return indicators > 0;
-    } catch {
-      return false;
-    }
-  }
-
-  async _needsLogin() {
-    try {
-      const url = this.page.url();
-      if (url.includes('/login') || url.includes('/auth')) return true;
-
-      // 检查登录表单
-      const loginForm = await this.page.$('input[type="password"], .login-form, [data-testid="login"]');
-      if (loginForm) return true;
-
-      // 检查聊天输入框是否存在（已登录用户的标志）
-      const input = await this._findInputBox().catch(() => null);
-      return !input;
-    } catch {
-      return true;
-    }
-  }
-
-  async _promptLogin() {
-    logger.warn('╔══════════════════════════════════════════════╗');
-    logger.warn('║  🔐  需要登录                                ║');
-    logger.warn('║                                              ║');
-    logger.warn('║  1. 在浏览器窗口中登录 DeepSeek              ║');
-    logger.warn('║  2. 返回此处并按  回车  继续                 ║');
-    logger.warn('╚══════════════════════════════════════════════╝');
-
-    console.log('');
-    console.log('');
-
-    // 等待用户按 Enter
-    await new Promise(resolve => {
-      process.stdin.once('data', resolve);
+      // 广泛回退
+      return document.querySelectorAll('[class*="message"]').length;
     });
-
-    // 给页面时间加载
-    await this.page.waitForTimeout(3_000);
-
-    // 验证登录
-    const stillNeedsLogin = await this._needsLogin();
-    if (stillNeedsLogin) {
-      logger.warn('仍然需要登录。请完成登录后再试。');
-      throw new Error('登录失败');
-    }
-
-    logger.success('登录成功！');
   }
 
-  _showProgress(text) {
-    const dotCount = Math.floor((Date.now() / 500) % 4);
-    logger.thinking(`正在接收回复${'.'.repeat(dotCount)}  (${text.length} 字符)`);
+  /** 提取最后一条助手消息的文本（包含代码块） */
+  async _extractLastMessage() {
+    return await this.page.evaluate(() => {
+
+      // ── 辅助函数：提取完整文本，保留代码块 fence ────────────────────
+      function getFullText(el) {
+        if (!el) return '';
+        let result = '';
+
+        function walk(node) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            result += node.textContent;
+            return;
+          }
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          const tag = node.tagName.toLowerCase();
+
+          // <pre> 包裹了带 fence 的代码块 — 重建反引号 fence
+          if (tag === 'pre') {
+            const codeEl = node.querySelector('code');
+            if (codeEl) {
+              const cls  = codeEl.className || '';
+              const lang = (cls.match(/language-(\S+)/) || [])[1] || '';
+              const body = codeEl.textContent || '';
+              result += '\n```' + lang + '\n' + body + '\n```\n';
+            } else {
+              result += '\n```\n' + node.textContent + '\n```\n';
+            }
+            return;
+          }
+
+          // 行内 <code> — 若不在 <pre> 内则包裹反引号
+          if (tag === 'code') {
+            const parentTag = node.parentElement && node.parentElement.tagName
+              ? node.parentElement.tagName.toLowerCase() : '';
+            if (parentTag !== 'pre') {
+              result += '`' + node.textContent + '`';
+            }
+            return;
+          }
+
+          for (const child of node.childNodes) walk(child);
+
+          if (['p','div','li','br','h1','h2','h3','h4','h5','h6'].includes(tag)) {
+            result += '\n';
+          }
+        }
+
+        walk(el);
+        return result.trim();
+      }
+
+      // ── 尝试1：特定的助手消息选择器 ──────────────────────────────────
+      const directSelectors = [
+        '.ds-markdown',
+        '[class*="assistant"] [class*="markdown"]',
+        '[class*="assistant"] [class*="content"]',
+        '[data-role="assistant"] [class*="content"]',
+        '[class*="ai-message"] [class*="content"]',
+        '[class*="bot-message"] [class*="content"]',
+        '[class*="response-content"]',
+        '[class*="message-content"]:last-child',
+      ];
+
+      for (const sel of directSelectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          const t = getFullText(els[els.length - 1]);
+          if (t.length > 10) return t;
+        }
+      }
+
+      // ── 尝试2：任何 markdown / prose 容器 ──────────────────────────────
+      const markdownEls = document.querySelectorAll(
+        '[class*="markdown"], [class*="prose"], [class*="rendered"]'
+      );
+      if (markdownEls.length > 0) {
+        const t = getFullText(markdownEls[markdownEls.length - 1]);
+        if (t.length > 10) return t;
+      }
+
+      // ── 尝试3：启发式 — 大的非用户文本块 ──────────────────────────────
+      const allBlocks = Array.from(
+        document.querySelectorAll('[class*="message"], [class*="chat-item"], [class*="turn"]')
+      );
+      const candidates = allBlocks.filter(el => {
+        const cls = el.className || '';
+        return (
+          !cls.toLowerCase().includes('input') &&
+          !cls.toLowerCase().includes('user') &&
+          !el.querySelector('textarea, input[type="text"]') &&
+          (el.innerText || '').length > 20
+        );
+      });
+
+      if (candidates.length > 0) {
+        return getFullText(candidates[candidates.length - 1]);
+      }
+
+      return '';
+    });
   }
 
-  // ── 调试 ──────────────────────────────────────────────────────────────────
+  /** 如果 DeepSeek 仍在流式生成则返回 true */
+  async _isGenerating() {
+    return await this.page.evaluate(() => {
+      // 检查停止按钮
+      const stopSelectors = [
+        'button[aria-label*="Stop" i]',
+        '[class*="stop-gen"]',
+        '[class*="stopGen"]',
+        '[class*="generating"]',
+      ];
+      for (const sel of stopSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const s = window.getComputedStyle(el);
+          if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') return true;
+        }
+      }
 
+      // 检查动画加载/打字指示器
+      const loaderSelectors = [
+        '[class*="typing"]',
+        '[class*="loading"]',
+        '[class*="spinner"]',
+        '[class*="blink"]',
+        '[class*="cursor"]',
+        '[class*="pulsing"]',
+        'svg[class*="loading"]',
+        'svg[class*="spinner"]',
+      ];
+      for (const sel of loaderSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const s = window.getComputedStyle(el);
+          if (s.display !== 'none' && s.visibility !== 'hidden') return true;
+        }
+      }
+
+      return false;
+    });
+  }
+
+  // ── 文本清理 ────────────────────────────────────────────────────────────
+
+  _cleanText(text) {
+    if (!text) return '';
+
+    return text
+      // 去除 DeepSeek R1 的思考块
+      .replace(/<think>[\s\S]*?<\/think>\n?/gi, '')
+      // 去除有时前缀的“Thinking...”头
+      .replace(/^Thinking\.{0,3}\n[\s\S]*?\n\n/m, '')
+      // 去除复制代码按钮的伪影如 “1CopyRunInsert”
+      .replace(/^\d+(?:Copy|Run|Insert|Edit)\b.*$/gm, '')
+      // 将 3 个以上空行压缩为 2 个
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  // ── 调试 / 校准工具 ────────────────────────────────────────────────────
+
+  /**
+   * 将有用的 DOM 信息打印到 stdout。
+   * 通过 `node src/calibrate.js` 或 `--debug` 标志调用。
+   */
   async dumpDebugInfo() {
     const info = await this.page.evaluate(() => {
-      const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable]'))
-        .map(el => ({
-          tag     : el.tagName,
-          type    : el.type,
-          id      : el.id,
-          class   : el.className,
-          name    : el.name,
-          placeholder: el.placeholder,
-        }));
-
-      const buttons = Array.from(document.querySelectorAll('button'))
-        .map(el => ({
-          text    : el.innerText?.slice(0, 40),
-          id      : el.id,
-          class   : el.className,
-        }));
-
-      // 统计 CSS 类频率
-      const classCounts = {};
+      const classFreq = {};
       document.querySelectorAll('*').forEach(el => {
-        el.classList?.forEach(cls => {
-          classCounts[cls] = (classCounts[cls] || 0) + 1;
+        el.classList.forEach(c => {
+          if (c.match(/message|chat|input|send|stop|markdown|content|assistant|user|bot/i)) {
+            classFreq[c] = (classFreq[c] || 0) + 1;
+          }
         });
       });
-      const sortedClasses = Object.entries(classCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 30);
+
+      const inputs = Array.from(document.querySelectorAll('textarea, [contenteditable]')).map(e => ({
+        tag         : e.tagName,
+        id          : e.id || null,
+        class       : e.className?.slice(0, 80) || null,
+        placeholder : e.placeholder || null,
+        editable    : e.isContentEditable,
+        visible     : e.offsetParent !== null,
+      }));
 
       return {
-        url     : location.href,
-        title   : document.title,
-        inputs  : inputs.slice(0, 10),
-        buttons : buttons.slice(0, 20),
-        classes : sortedClasses,
+        url    : window.location.href,
+        title  : document.title,
+        classes: Object.entries(classFreq).sort((a, b) => b[1] - a[1]).slice(0, 40),
+        inputs,
       };
     });
 
@@ -345,16 +563,14 @@ class DeepSeekBrowser {
     console.log('标题 :', info.title);
     console.log('\n输入元素:');
     info.inputs.forEach(i => console.log(' ', JSON.stringify(i)));
-    console.log('\n按钮（可见，前30个）:');
-    info.buttons.forEach((b, i) => console.log(`  [${i}] ${JSON.stringify(b)}`));
     console.log('\n匹配 CSS 类（按频率）:');
     info.classes.forEach(([cls, count]) => console.log(`  ${String(count).padStart(3)}x  .${cls}`));
     console.log('═'.repeat(40) + '\n');
   }
 
-  async screenshot(filePath) {
-    const fp = filePath || '/tmp/deepseek-debug.png';
-    await this.page.screenshot({ path: fp, fullPage: true });
+  /** 截图（用于调试） */
+  async screenshot(filePath = '/tmp/deepseek-agent-debug.png') {
+    await this.page.screenshot({ path: filePath, fullPage: false });
     logger.info(`截图已保存: ${filePath}`);
   }
 }
