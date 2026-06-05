@@ -8,6 +8,9 @@ const os   = require('os');
 let currentSessionId = null;
 let currentSessionDir = null;
 
+// 缓存已经备份过的文件，键为绝对路径，值为备份文件路径
+const backedUpFiles = new Map();
+
 /**
  * 设置当前会话 ID
  * @param {string} sessionId - 会话 ID
@@ -18,6 +21,8 @@ function setSessionId(sessionId) {
   const baseDir = path.join(process.cwd(), '.deepseek-agent-zhcn-backups');
   currentSessionDir = path.join(baseDir, sessionId);
   fs.mkdirSync(currentSessionDir, { recursive: true });
+  // 新会话时清空备份缓存
+  backedUpFiles.clear();
 }
 
 /**
@@ -29,26 +34,38 @@ function getBackupDir() {
 }
 
 /**
- * 创建文件的备份
+ * 创建文件的备份（每个文件只备份一次原始版本）
  * @param {string} filePath - 要备份的文件路径
- * @returns {string|null} 备份文件路径，如果文件不存在则返回 null
+ * @returns {string|null} 备份文件路径，如果文件不存在或已是新文件则返回 null
  */
 function createBackup(filePath) {
   if (!fs.existsSync(filePath)) {
     return null; // 新文件，无需备份
   }
 
-  const timestamp = Date.now();
+  const absPath = path.resolve(filePath);
+
+  // 如果已经备份过该文件，直接返回之前的备份路径
+  if (backedUpFiles.has(absPath)) {
+    return backedUpFiles.get(absPath);
+  }
+
   const basename = path.basename(filePath);
-  const backupFileName = `${basename}.${timestamp}.backup`;
+  // 使用固定后缀 .original.backup 确保每个文件只有一个原始备份
+  const backupFileName = `${basename}.original.backup`;
   const backupPath = path.join(currentSessionDir, backupFileName);
 
+  // 避免文件名冲突：如果备份文件已存在（例如来自之前的会话），则添加时间戳
+  // 但正常情况下会话目录是唯一的，所以直接使用固定名称也可行。
+  // 为了更加健壮，如果已存在则添加时间戳后缀，但这样会导致多个备份，违背初衷。
+  // 由于会话 ID 不同，目录不同，所以不会冲突。
   fs.copyFileSync(filePath, backupPath);
+  backedUpFiles.set(absPath, backupPath);
   return backupPath;
 }
 
 /**
- * 创建带元数据的备份
+ * 创建带元数据的备份（只记录操作，不重复复制文件）
  * @param {string} filePath - 要备份的文件路径
  * @param {string} operation - 操作类型
  * @returns {string|null} 备份文件路径
@@ -56,8 +73,8 @@ function createBackup(filePath) {
 function createBackupWithMetadata(filePath, operation) {
   const backupPath = createBackup(filePath);
   
+  // 只要有备份文件（无论是新创建还是已存在），都记录操作元数据
   if (backupPath) {
-    // 记录备份元数据
     const metadataPath = path.join(currentSessionDir, 'backup_manifest.json');
     let manifest = [];
     
@@ -104,8 +121,8 @@ function backupUserPrompt(prompt) {
 }
 
 /**
- * 列出当前会话的所有备份
- * @returns {Array} 备份列表
+ * 列出当前会话的所有备份操作记录
+ * @returns {Array} 备份操作列表
  */
 function listBackups() {
   if (!currentSessionDir || !fs.existsSync(currentSessionDir)) {
@@ -125,25 +142,36 @@ function listBackups() {
 }
 
 /**
- * 恢复文件到最后一个备份
+ * 恢复文件到最后一个备份（即原始版本，因为只备份一次）
  * @param {string} filePath - 要恢复的文件路径
  * @returns {boolean} 是否成功恢复
  */
 function restoreLastBackup(filePath) {
+  const absPath = path.resolve(filePath);
+  // 直接检查缓存中是否有该文件的备份
+  if (backedUpFiles.has(absPath)) {
+    const backupPath = backedUpFiles.get(absPath);
+    if (fs.existsSync(backupPath)) {
+      fs.copyFileSync(backupPath, filePath);
+      return true;
+    }
+  }
+  
+  // 后备：从 manifest 中查找该文件的第一次备份（按时间最早的）
   const backups = listBackups()
     .filter(b => b.originalPath === filePath)
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
   
   if (backups.length === 0) {
     return false;
   }
   
-  const lastBackup = backups[0];
-  if (!fs.existsSync(lastBackup.backupPath)) {
+  const firstBackup = backups[0];
+  if (!fs.existsSync(firstBackup.backupPath)) {
     return false;
   }
   
-  fs.copyFileSync(lastBackup.backupPath, filePath);
+  fs.copyFileSync(firstBackup.backupPath, filePath);
   return true;
 }
 
