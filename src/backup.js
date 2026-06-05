@@ -14,8 +14,8 @@ let currentSessionDir = null;
  */
 function setSessionId(sessionId) {
   currentSessionId = sessionId;
-  // 备份目录改为当前命令执行目录下的 deepseek-agent-backups 子目录
-  const baseDir = path.join(process.cwd(), '.deepseek-agent-backups');
+  // 备份目录改为当前命令执行目录下的 deepseek-agent-zhcn-backups 子目录
+  const baseDir = path.join(process.cwd(), '.deepseek-agent-zhcn-backups');
   currentSessionDir = path.join(baseDir, sessionId);
   fs.mkdirSync(currentSessionDir, { recursive: true });
 }
