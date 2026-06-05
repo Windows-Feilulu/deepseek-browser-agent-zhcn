@@ -103,7 +103,7 @@ class ConversationManager {
     this._systemPrompt = buildSystemPrompt();
 
     const dirContext = workingDirListing
-      ? '\n当前工作目录内容:\n' + workingDirListing + '\n'
+      ? '\n当前工作目录内容（部分）:\n' + workingDirListing + '\n'
       : '';
 
     const firstMessage = [
