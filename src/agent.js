@@ -289,7 +289,7 @@ class DeepSeekAgent {
   }
 
   _getWorkingDirListing() {
-    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build', '.deepseek-agent-zhcn-backups', '.vs', '.vscode', 'backups', 'depend', 'lib', '.qm', '.qtcreator', '.uploads', 'debug', 'release']);
+    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build', '.deepseek-agent-zhcn-backups', '.vs', '.vscode', 'backups', 'depend', 'lib', '.qm', '.qtcreator', '.uploads', 'debug', 'release', 'obj']);
     const results = [];
 
     const walk = (dirRel, depth) => {
