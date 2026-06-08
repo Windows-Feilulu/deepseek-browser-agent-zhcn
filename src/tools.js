@@ -265,7 +265,7 @@ const TOOLS = {
         // 使用 PowerShell Get-ChildItem 递归，过滤掉常见噪声文件夹
         const hiddenFilter = show_hidden ? '' : '-Force'; // -Force 包含隐藏文件；如果不显示隐藏文件则后续过滤
         // 构建排除目录的正则
-        const excludePattern = 'node_modules|\\.git|dist';
+        const excludePattern = 'node_modules|\\.git|dist|build|x64|x86|depend|Debug|Release|Obj|bin|.qtcreator|.vscode';
         // PowerShell 命令：递归获取所有文件/目录，排除不需要的文件夹，按全名排序，取前300个
         let psCmd = `Get-ChildItem -Path '${escapePS(abs)}' -Recurse`;
         if (!show_hidden) {
