@@ -133,7 +133,7 @@ class ConversationManager {
       String(result),
       '[工具结果结束]',
       '',
-      '继续下一步，如果任务已完成则给出最终回复。',
+      '继续调用工具，否则视为完成任务的最终回复。',
     ].join('\n');
 
     this.messages.push({ role: 'user', content: content });
