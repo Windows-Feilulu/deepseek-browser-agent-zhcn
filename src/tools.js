@@ -142,7 +142,7 @@ const TOOLS = {
   },
 
   // ── 文本替换（区分大小写，全部替换）────────────────────────────────────
-  replace_text: {
+  edit_file: {
     description: '在文件中查找文本并全部替换。默认区分大小写。',
     parameters: {
       path           : { type: 'string',  required: true,  description: '文件路径' },
