@@ -1,13 +1,13 @@
 // src/tools.js — AI Agent 可用的所有工具（中文版）
 'use strict';
 
-const fs            = require('fs');
-const path          = require('path');
-const { execSync }  = require('child_process');
-const http          = require('http');
-const https         = require('https');
-const config        = require('./config');
-const backup        = require('./backup');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const http = require('http');
+const https = require('https');
+const config = require('./config');
+const backup = require('./backup');
 
 // ─────────────────────────────────────────────
 //  辅助函数
@@ -90,13 +90,13 @@ const TOOLS = {
   read_file: {
     description: '读取文件的完整内容。可选读取指定行范围。',
     parameters: {
-      path        : { type: 'string',  required: true,  description: '文件路径' },
-      start_line  : { type: 'number',  required: false, description: '起始行号（从1开始）' },
-      end_line    : { type: 'number',  required: false, description: '结束行号（包含）' },
+      path: { type: 'string', required: true, description: '文件路径' },
+      start_line: { type: 'number', required: false, description: '起始行号（从1开始）' },
+      end_line: { type: 'number', required: false, description: '结束行号（包含）' },
     },
     async execute({ path: filePath, start_line, end_line }) {
       const abs = resolve(filePath);
-      if (!fs.existsSync(abs))       throw new Error(`文件未找到: ${filePath}`);
+      if (!fs.existsSync(abs)) throw new Error(`文件未找到: ${filePath}`);
       if (fs.statSync(abs).isDirectory()) throw new Error(`${filePath} 是目录`);
 
       // 以 LF 换行符读取
@@ -122,8 +122,8 @@ const TOOLS = {
   write_file: {
     description: '写入（创建或覆盖）文件。自动创建父目录。',
     parameters: {
-      path    : { type: 'string', required: true, description: '目标文件路径' },
-      content : { type: 'string', required: true, description: '要写入的完整文件内容' },
+      path: { type: 'string', required: true, description: '目标文件路径' },
+      content: { type: 'string', required: true, description: '要写入的完整文件内容' },
     },
     async execute({ path: filePath, content }) {
       const abs = resolve(filePath);
@@ -145,12 +145,12 @@ const TOOLS = {
   edit_file: {
     description: '在文件中查找文本并全部替换。默认区分大小写。',
     parameters: {
-      path           : { type: 'string',  required: true,  description: '文件路径' },
-      text           : { type: 'string',  required: true,  description: '要搜索的文本' },
-      replace        : { type: 'string',  required: true,  description: '替换文本' },
-      case_sensitive : { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
+      path: { type: 'string', required: true, description: '文件路径' },
+      old_string: { type: 'string', required: true, description: '被替换文本' },
+      new_string: { type: 'string', required: true, description: '替换文本' },
+      case_sensitive: { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
     },
-    async execute({ path: filePath, text, replace, case_sensitive = true }) {
+    async execute({ path: filePath, old_string, new_string, case_sensitive = true }) {
       const abs = resolve(filePath);
       // 修改前创建备份
       try {
@@ -162,8 +162,8 @@ const TOOLS = {
       // 以 LF 读取
       let content = readFileNormalized(abs);
       const original = content;
-      const normalizedText = toLF(text);
-      const normalizedReplace = toLF(replace);
+      const normalizedText = toLF(old_string);
+      const normalizedReplace = toLF(new_string);
 
       // 转义搜索文本，构造正则
       const escaped = escapeRegExp(normalizedText);
@@ -175,14 +175,14 @@ const TOOLS = {
       const count = matches ? matches.length : 0;
 
       if (count === 0) {
-        return `⚠ 在 ${filePath} 中未找到 "${text}" 的匹配项`;
+        return `⚠ 在 ${filePath} 中未找到 "${old_string}" 的匹配项`;
       }
 
       // 全部替换，避免 $ 特殊符号干扰
       content = original.replace(regex, () => normalizedReplace);
 
       writeFileNormalized(abs, content);
-      return `✓ 在 ${filePath} 中替换了 ${count} 处 "${text}"`;
+      return `✓ 在 ${filePath} 中替换了 ${count} 处 "${old_string}"`;
     },
   },
 
@@ -190,10 +190,10 @@ const TOOLS = {
   replace_regex: {
     description: '使用正则表达式在文件中查找并全部替换。默认区分大小写。正则不应包含标志（由工具自动添加 g 与 i）。',
     parameters: {
-      path           : { type: 'string',  required: true,  description: '文件路径' },
-      regex          : { type: 'string',  required: true,  description: '正则表达式（不含标志）' },
-      replace        : { type: 'string',  required: true,  description: '替换文本，支持 $1, $2' },
-      case_sensitive : { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
+      path: { type: 'string', required: true, description: '文件路径' },
+      regex: { type: 'string', required: true, description: '正则表达式（不含标志）' },
+      replace: { type: 'string', required: true, description: '替换文本，支持 $1, $2' },
+      case_sensitive: { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
     },
     async execute({ path: filePath, regex: pattern, replace, case_sensitive = true }) {
       const abs = resolve(filePath);
@@ -251,13 +251,13 @@ const TOOLS = {
   list_directory: {
     description: '列出目录中的文件和文件夹，可选递归。',
     parameters: {
-      path        : { type: 'string',  required: false, description: '要列出的目录（默认: 工作目录）' },
-      recursive   : { type: 'boolean', required: false, description: '递归到子目录（默认: false）' },
-      show_hidden : { type: 'boolean', required: false, description: '包含以 . 开头的隐藏文件（默认: false）' },
+      path: { type: 'string', required: false, description: '要列出的目录（默认: 工作目录）' },
+      recursive: { type: 'boolean', required: false, description: '递归到子目录（默认: false）' },
+      show_hidden: { type: 'boolean', required: false, description: '包含以 . 开头的隐藏文件（默认: false）' },
     },
     async execute({ path: dirPath = '.', recursive = false, show_hidden = false }) {
       const abs = resolve(dirPath);
-      if (!fs.existsSync(abs))        throw new Error(`目录未找到: ${dirPath}`);
+      if (!fs.existsSync(abs)) throw new Error(`目录未找到: ${dirPath}`);
       if (!fs.statSync(abs).isDirectory()) throw new Error(`${dirPath} 不是目录`);
 
       if (recursive) {
@@ -319,11 +319,11 @@ const TOOLS = {
   move_file: {
     description: '移动或重命名文件或目录。',
     parameters: {
-      source      : { type: 'string', required: true, description: '源路径' },
-      destination : { type: 'string', required: true, description: '目标路径' },
+      source: { type: 'string', required: true, description: '源路径' },
+      destination: { type: 'string', required: true, description: '目标路径' },
     },
     async execute({ source, destination }) {
-      const src  = resolve(source);
+      const src = resolve(source);
       const dest = resolve(destination);
       if (!fs.existsSync(src)) throw new Error(`源文件未找到: ${source}`);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -336,11 +336,11 @@ const TOOLS = {
   copy_file: {
     description: '复制文件到新位置。',
     parameters: {
-      source      : { type: 'string', required: true, description: '源文件路径' },
-      destination : { type: 'string', required: true, description: '目标文件路径' },
+      source: { type: 'string', required: true, description: '源文件路径' },
+      destination: { type: 'string', required: true, description: '目标文件路径' },
     },
     async execute({ source, destination }) {
-      const src  = resolve(source);
+      const src = resolve(source);
       const dest = resolve(destination);
       if (!fs.existsSync(src)) throw new Error(`源文件未找到: ${source}`);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -360,13 +360,13 @@ const TOOLS = {
       if (!fs.existsSync(abs)) throw new Error(`未找到: ${filePath}`);
       const stat = fs.statSync(abs);
       const info = {
-        path        : abs,
-        type        : stat.isDirectory() ? '目录' : '文件',
-        size        : stat.size,
-        size_human  : formatBytes(stat.size),
-        modified    : stat.mtime.toISOString(),
-        created     : stat.birthtime.toISOString(),
-        permissions : `0${(stat.mode & 0o777).toString(8)}`,
+        path: abs,
+        type: stat.isDirectory() ? '目录' : '文件',
+        size: stat.size,
+        size_human: formatBytes(stat.size),
+        modified: stat.mtime.toISOString(),
+        created: stat.birthtime.toISOString(),
+        permissions: `0${(stat.mode & 0o777).toString(8)}`,
       };
       if (stat.isFile()) {
         const content = readFileNormalized(abs);
@@ -377,64 +377,64 @@ const TOOLS = {
     },
   },
 
-// run_command 工具修改部分：添加文件读取检测
-run_command: {
-  description: '执行 shell 命令并返回输出。默认在工作目录中运行。',
-  parameters: {
-    command : { type: 'string',  required: true,  description: '要运行的 shell 命令' },
-    cwd     : { type: 'string',  required: false, description: '命令的工作目录' },
-    timeout : { type: 'number',  required: false, description: '超时时间（毫秒，默认: 60000）' },
-    env     : { type: 'object',  required: false, description: '额外的环境变量（键值对）' },
-  },
-  async execute({ command, cwd, timeout = 60_000, env = {} }) {
-    // ========== 新增：检测是否试图读取文件内容 ==========
-    const fileReadPatterns = [
-      /Get-Content/i,
-      /\bcat\s+/i,
-      /\btype\s+/i,
-      /\bmore\s+/i,
-      /\btail\s+/i,
-      /\bgc\s+/i,
-      /<\s*["']?\w+["']?/,
-    ];
-    for (const pattern of fileReadPatterns) {
-      if (pattern.test(command)) {
-        throw new Error('禁止通过命令行读取文件内容。请使用 read_file 工具代替。');
+  // run_command 工具修改部分：添加文件读取检测
+  run_command: {
+    description: '执行 shell 命令并返回输出。默认在工作目录中运行。',
+    parameters: {
+      command: { type: 'string', required: true, description: '要运行的 shell 命令' },
+      cwd: { type: 'string', required: false, description: '命令的工作目录' },
+      timeout: { type: 'number', required: false, description: '超时时间（毫秒，默认: 60000）' },
+      env: { type: 'object', required: false, description: '额外的环境变量（键值对）' },
+    },
+    async execute({ command, cwd, timeout = 60_000, env = {} }) {
+      // ========== 新增：检测是否试图读取文件内容 ==========
+      const fileReadPatterns = [
+        /Get-Content/i,
+        /\bcat\s+/i,
+        /\btype\s+/i,
+        /\bmore\s+/i,
+        /\btail\s+/i,
+        /\bgc\s+/i,
+        /<\s*["']?\w+["']?/,
+      ];
+      for (const pattern of fileReadPatterns) {
+        if (pattern.test(command)) {
+          throw new Error('禁止通过命令行读取文件内容。请使用 read_file 工具代替。');
+        }
       }
-    }
-    // ========== 检测结束 ==========
+      // ========== 检测结束 ==========
 
-    const workDir = cwd ? resolve(cwd) : config.WORKING_DIR;
-    try {
-      const output = execSync(command, {
-        cwd         : workDir,
-        encoding    : 'utf8',
-        timeout,
-        maxBuffer   : 20 * 1024 * 1024,
-        env         : { ...process.env, ...env },
-        stdio       : ['pipe', 'pipe', 'pipe'],
-      });
-      const result = (output || '').trim();
-      return truncate(result || '(命令执行完成，无输出)');
-    } catch (err) {
-      const stdout = (err.stdout || '').trim();
-      const stderr = (err.stderr || '').trim();
-      const combined = [
-        stdout && `标准输出:\n${stdout}`,
-        stderr && `标准错误:\n${stderr}`,
-      ].filter(Boolean).join('\n\n');
-      throw new Error(`命令失败（退出码 ${err.status}）:\n${truncate(combined || err.message)}`);
-    }
+      const workDir = cwd ? resolve(cwd) : config.WORKING_DIR;
+      try {
+        const output = execSync(command, {
+          cwd: workDir,
+          encoding: 'utf8',
+          timeout,
+          maxBuffer: 20 * 1024 * 1024,
+          env: { ...process.env, ...env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const result = (output || '').trim();
+        return truncate(result || '(命令执行完成，无输出)');
+      } catch (err) {
+        const stdout = (err.stdout || '').trim();
+        const stderr = (err.stderr || '').trim();
+        const combined = [
+          stdout && `标准输出:\n${stdout}`,
+          stderr && `标准错误:\n${stderr}`,
+        ].filter(Boolean).join('\n\n');
+        throw new Error(`命令失败（退出码 ${err.status}）:\n${truncate(combined || err.message)}`);
+      }
+    },
   },
-},
 
   // ── 查找文件 ──────────────────────────────────────────────────────────────
   find_files: {
     description: '按名称模式搜索文件（glob风格，例如 "*.js"、"test_*"）。',
     parameters: {
-      pattern   : { type: 'string', required: true,  description: '文件名模式（例如 "*.ts"）' },
-      directory : { type: 'string', required: false, description: '搜索目录（默认: 工作目录）' },
-      exclude   : { type: 'string', required: false, description: '要从结果中排除的模式' },
+      pattern: { type: 'string', required: true, description: '文件名模式（例如 "*.ts"）' },
+      directory: { type: 'string', required: false, description: '搜索目录（默认: 工作目录）' },
+      exclude: { type: 'string', required: false, description: '要从结果中排除的模式' },
     },
     async execute({ pattern, directory = '.', exclude }) {
       const dir = resolve(directory);
@@ -459,16 +459,16 @@ run_command: {
   search_in_files: {
     description: '在文件内搜索文本模式（类似 grep -r）。返回匹配行及文件名。',
     parameters: {
-      pattern       : { type: 'string',  required: true,  description: '要搜索的文本或正则表达式' },
-      directory     : { type: 'string',  required: false, description: '搜索目录（默认: 工作目录）' },
-      file_pattern  : { type: 'string',  required: false, description: '仅搜索匹配此模式的文件（例如 "*.js"）' },
+      pattern: { type: 'string', required: true, description: '要搜索的文本或正则表达式' },
+      directory: { type: 'string', required: false, description: '搜索目录（默认: 工作目录）' },
+      file_pattern: { type: 'string', required: false, description: '仅搜索匹配此模式的文件（例如 "*.js"）' },
       case_sensitive: { type: 'boolean', required: false, description: '区分大小写（默认: false）' },
-      context_lines : { type: 'number',  required: false, description: '每处匹配周围的上下文行数（默认: 2）' },
+      context_lines: { type: 'number', required: false, description: '每处匹配周围的上下文行数（默认: 2）' },
     },
     async execute({ pattern, directory = '.', file_pattern, case_sensitive = false, context_lines = 2 }) {
       const dir = resolve(directory);
       if (!fs.existsSync(dir)) throw new Error(`目录未找到: ${directory}`);
-      
+
       // 构建正则表达式
       let regex;
       const flags = case_sensitive ? '' : 'i';
@@ -480,26 +480,26 @@ run_command: {
         const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         regex = new RegExp(escaped, flags);
       }
-      
+
       // 文件模式匹配（glob 转正则）
       let fileMatcher = null;
       if (file_pattern) {
         const globToRegex = (glob) => {
           const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-                            .replace(/\*/g, '.*')
-                            .replace(/\?/g, '.');
+            .replace(/\*/g, '.*')
+            .replace(/\?/g, '.');
           return new RegExp(`^${escaped}$`, 'i');
         };
         fileMatcher = globToRegex(file_pattern);
       }
-      
+
       // 排除目录（正则匹配目录名或路径片段）
       const excludeDirs = /node_modules|build|debug|release|\.git|dist|__pycache__|backups|venv|\.idea|\.vscode/;
-      
+
       const results = [];
       const MAX_RESULTS = 150;
       const MAX_FILE_SIZE = 5 * 1024 * 1024; // 跳过超过 5MB 的文件
-      
+
       // 递归遍历目录
       function walk(currentDir) {
         if (results.length >= MAX_RESULTS) return;
@@ -509,11 +509,11 @@ run_command: {
         } catch {
           return; // 忽略权限错误
         }
-        
+
         for (const entry of entries) {
           if (results.length >= MAX_RESULTS) break;
           const fullPath = path.join(currentDir, entry.name);
-          
+
           if (entry.isDirectory()) {
             // 跳过排除的目录
             if (excludeDirs.test(entry.name) || excludeDirs.test(fullPath)) continue;
@@ -521,14 +521,14 @@ run_command: {
           } else if (entry.isFile()) {
             // 文件模式过滤
             if (fileMatcher && !fileMatcher.test(entry.name)) continue;
-            
+
             // 跳过超大文件
             let stats;
             try {
               stats = fs.statSync(fullPath);
               if (stats.size > MAX_FILE_SIZE) continue;
             } catch { continue; }
-            
+
             // 检测二进制文件（读取前 1KB，若含 null 字节则跳过）
             let isBinary = false;
             try {
@@ -539,7 +539,7 @@ run_command: {
               if (buffer.slice(0, bytesRead).includes(0)) isBinary = true;
             } catch { continue; }
             if (isBinary) continue;
-            
+
             // 读取文件内容（UTF-8）
             let content;
             try {
@@ -547,7 +547,7 @@ run_command: {
             } catch {
               continue; // 编码问题跳过
             }
-            
+
             const lines = content.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               if (results.length >= MAX_RESULTS) break;
@@ -558,18 +558,18 @@ run_command: {
                 const contextParts = [];
                 for (let j = start; j <= end; j++) {
                   const prefix = (j === i) ? '>>>' : '   ';
-                  contextParts.push(`${prefix} ${j+1}: ${lines[j]}`);
+                  contextParts.push(`${prefix} ${j + 1}: ${lines[j]}`);
                 }
                 const relativePath = path.relative(dir, fullPath);
-                results.push(`[${relativePath}:${i+1}]\n${contextParts.join('\n')}\n`);
+                results.push(`[${relativePath}:${i + 1}]\n${contextParts.join('\n')}\n`);
               }
             }
           }
         }
       }
-      
+
       walk(dir);
-      
+
       if (results.length === 0) {
         return `未找到匹配: ${pattern}`;
       }
@@ -603,11 +603,11 @@ run_command: {
     },
     async execute({ url }) {
       return new Promise((resolve_p, reject) => {
-        const client  = url.startsWith('https') ? https : http;
+        const client = url.startsWith('https') ? https : http;
         const options = {
           headers: {
             'User-Agent': 'Mozilla/5.0 (compatible; DeepSeekAgent/1.0)',
-            'Accept'    : 'text/html,text/plain,application/json',
+            'Accept': 'text/html,text/plain,application/json',
           },
         };
 
@@ -640,8 +640,8 @@ run_command: {
     description: '同时写入多个文件 — 适用于项目脚手架。',
     parameters: {
       files: {
-        type       : 'array',
-        required   : true,
+        type: 'array',
+        required: true,
         description: '{path, content} 对象数组',
       },
     },
