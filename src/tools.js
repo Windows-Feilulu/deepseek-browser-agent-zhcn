@@ -549,20 +549,45 @@ const TOOLS = {
             }
 
             const lines = content.split(/\r?\n/);
+
+            // 收集本文件中所有匹配行号
+            const matchLineIndices = [];
             for (let i = 0; i < lines.length; i++) {
-              if (results.length >= MAX_RESULTS) break;
               if (regex.test(lines[i])) {
-                // 提取上下文行
-                const start = Math.max(0, i - context_lines);
-                const end = Math.min(lines.length - 1, i + context_lines);
-                const contextParts = [];
-                for (let j = start; j <= end; j++) {
-                  const prefix = (j === i) ? '>>>' : '   ';
-                  contextParts.push(`${prefix} ${j + 1}: ${lines[j]}`);
-                }
-                const relativePath = path.relative(dir, fullPath);
-                results.push(`[${relativePath}:${i + 1}]\n${contextParts.join('\n')}\n`);
+                matchLineIndices.push(i);
               }
+            }
+
+            if (matchLineIndices.length === 0) continue;
+
+            // 合并重叠或相邻的上下文范围
+            // 每个范围: [startLine, endLine]（0-based，含首尾）
+            const mergedRanges = [];
+            for (const lineIdx of matchLineIndices) {
+              const rangeStart = Math.max(0, lineIdx - context_lines);
+              const rangeEnd = Math.min(lines.length - 1, lineIdx + context_lines);
+
+              if (mergedRanges.length > 0) {
+                const last = mergedRanges[mergedRanges.length - 1];
+                // 如果当前范围与上一个范围重叠或紧邻（相差 <= 1 行），则合并
+                if (rangeStart <= last[1] + 1) {
+                  last[1] = Math.max(last[1], rangeEnd);
+                  continue;
+                }
+              }
+              mergedRanges.push([rangeStart, rangeEnd]);
+            }
+
+            const relativePath = path.relative(dir, fullPath);
+            for (const [start, end] of mergedRanges) {
+              if (results.length >= MAX_RESULTS) break;
+              const contextParts = [];
+              for (let j = start; j <= end; j++) {
+                const isMatch = matchLineIndices.includes(j);
+                const prefix = isMatch ? '>>>' : '   ';
+                contextParts.push(`${prefix} ${j + 1}: ${lines[j]}`);
+              }
+              results.push(`[${relativePath}:${start + 1}–${end + 1}]\n${contextParts.join('\n')}\n`);
             }
           }
         }
