@@ -8,6 +8,7 @@ const http = require('http');
 const https = require('https');
 const config = require('./config');
 const backup = require('./backup');
+const { createGitignoreFilter } = require('./gitignore');
 
 // ─────────────────────────────────────────────
 //  辅助函数
@@ -260,24 +261,56 @@ const TOOLS = {
       if (!fs.existsSync(abs)) throw new Error(`目录未找到: ${dirPath}`);
       if (!fs.statSync(abs).isDirectory()) throw new Error(`${dirPath} 不是目录`);
 
+      // 加载 .gitignore 过滤规则
+      const gitignoreFilter = createGitignoreFilter(config.WORKING_DIR);
+
       if (recursive) {
-        // 使用 PowerShell Get-ChildItem 递归，过滤掉常见噪声文件夹
-        const hiddenFilter = show_hidden ? '' : '-Force'; // -Force 包含隐藏文件；如果不显示隐藏文件则后续过滤
-        // 构建排除目录的正则
-        const excludePattern = 'node_modules|\\.git|dist|build|x64|x86|depend|Debug|Release|Obj|bin|.qtcreator|.vscode';
-        // PowerShell 命令：递归获取所有文件/目录，排除不需要的文件夹，按全名排序，取前300个
-        let psCmd = `Get-ChildItem -Path '${escapePS(abs)}' -Recurse`;
-        if (!show_hidden) {
-          psCmd += ` | Where-Object { $_.Name -notlike '.*' }`;
+        // 使用 Node.js 递归遍历，应用 .gitignore 规则
+        const results = [];
+        const MAX_RESULTS = 300;
+
+        function walk(currentDir, depth = 0) {
+          if (results.length >= MAX_RESULTS) return;
+          let entries;
+          try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+          } catch {
+            return;
+          }
+
+          for (const entry of entries) {
+            if (results.length >= MAX_RESULTS) break;
+
+            // 隐藏文件过滤
+            if (!show_hidden && entry.name.startsWith('.')) continue;
+
+            const fullPath = path.join(currentDir, entry.name);
+
+            // 应用 .gitignore 规则
+            if (!gitignoreFilter(fullPath, entry.isDirectory())) continue;
+
+            const relativePath = path.relative(abs, fullPath);
+            results.push(relativePath || entry.name);
+
+            if (entry.isDirectory()) {
+              walk(fullPath, depth + 1);
+            }
+          }
         }
-        psCmd += ` | Where-Object { $_.FullName -notmatch '${excludePattern}' }`;
-        psCmd += ` | Sort-Object FullName | Select-Object -First 300 | ForEach-Object { $_.FullName }`;
-        const out = execSync(`powershell.exe -NoProfile -Command "${psCmd}"`, { encoding: 'utf8' }).trim();
-        return out || '(空)';
+
+        walk(abs);
+        return results.length > 0 ? results.join('\n') : '(空)';
       }
 
       const entries = fs.readdirSync(abs, { withFileTypes: true });
-      const visible = show_hidden ? entries : entries.filter(e => !e.name.startsWith('.'));
+      let visible = show_hidden ? entries : entries.filter(e => !e.name.startsWith('.'));
+
+      // 应用 .gitignore 规则过滤
+      visible = visible.filter(e => {
+        const fullPath = path.join(abs, e.name);
+        return gitignoreFilter(fullPath, e.isDirectory());
+      });
+
       visible.sort((a, b) => {
         if (a.isDirectory() && !b.isDirectory()) return -1;
         if (!a.isDirectory() && b.isDirectory()) return 1;
@@ -438,20 +471,62 @@ const TOOLS = {
     },
     async execute({ pattern, directory = '.', exclude }) {
       const dir = resolve(directory);
-      let excludePattern = 'node_modules|build|debug|release|backups|\\.git|dist';
-      if (exclude) {
-        excludePattern += `|${escapePS(exclude)}`;
+      if (!fs.existsSync(dir)) throw new Error(`目录未找到: ${directory}`);
+
+      // 加载 .gitignore 过滤规则
+      const gitignoreFilter = createGitignoreFilter(config.WORKING_DIR);
+
+      // glob 模式转正则
+      const globToRegex = (glob) => {
+        const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '.*')
+          .replace(/\?/g, '.');
+        return new RegExp(`^${escaped}$`, 'i');
+      };
+
+      const fileMatcher = globToRegex(pattern);
+      const excludeMatcher = exclude ? globToRegex(exclude) : null;
+
+      const results = [];
+      const MAX_RESULTS = 100;
+
+      function walk(currentDir) {
+        if (results.length >= MAX_RESULTS) return;
+        let entries;
+        try {
+          entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+
+        for (const entry of entries) {
+          if (results.length >= MAX_RESULTS) break;
+          const fullPath = path.join(currentDir, entry.name);
+
+          // 应用 .gitignore 规则
+          if (!gitignoreFilter(fullPath, entry.isDirectory())) continue;
+
+          if (entry.isDirectory()) {
+            walk(fullPath);
+          } else if (entry.isFile()) {
+            // 文件名模式匹配
+            if (!fileMatcher.test(entry.name)) continue;
+            // 排除模式匹配
+            if (excludeMatcher && excludeMatcher.test(entry.name)) continue;
+            results.push(fullPath);
+          }
+        }
       }
-      // 使用 PowerShell: Get-ChildItem -Recurse -Filter，然后过滤排除的文件夹
-      const psCmd = `Get-ChildItem -Path '${escapePS(dir)}' -Recurse -Filter '${escapePS(pattern)}' -File | Where-Object { $_.FullName -notmatch '${excludePattern}' } | Sort-Object FullName | Select-Object -First 100 | ForEach-Object { $_.FullName }`;
-      let result;
-      try {
-        result = execSync(`powershell.exe -NoProfile -Command "${psCmd}"`, { encoding: 'utf8' }).trim();
-      } catch (err) {
-        if (err.status === 1) return `在 ${directory} 中未找到匹配 "${pattern}" 的文件`;
-        throw err;
+
+      walk(dir);
+
+      if (results.length === 0) {
+        return `在 ${directory} 中未找到匹配 "${pattern}" 的文件`;
       }
-      return result || `在 ${directory} 中未找到匹配 "${pattern}" 的文件`;
+
+      // 排序并返回
+      results.sort();
+      return results.join('\n');
     },
   },
 
@@ -468,6 +543,9 @@ const TOOLS = {
     async execute({ pattern, directory = '.', file_pattern, case_sensitive = false, context_lines = 2 }) {
       const dir = resolve(directory);
       if (!fs.existsSync(dir)) throw new Error(`目录未找到: ${directory}`);
+
+      // 加载 .gitignore 过滤规则
+      const gitignoreFilter = createGitignoreFilter(config.WORKING_DIR);
 
       // 构建正则表达式
       let regex;
@@ -493,9 +571,6 @@ const TOOLS = {
         fileMatcher = globToRegex(file_pattern);
       }
 
-      // 排除目录（正则匹配目录名或路径片段）
-      const excludeDirs = /node_modules|build|debug|release|\.git|dist|__pycache__|backups|venv|\.idea|\.vscode/;
-
       const results = [];
       const MAX_RESULTS = 150;
       const MAX_FILE_SIZE = 5 * 1024 * 1024; // 跳过超过 5MB 的文件
@@ -514,9 +589,10 @@ const TOOLS = {
           if (results.length >= MAX_RESULTS) break;
           const fullPath = path.join(currentDir, entry.name);
 
+          // 应用 .gitignore 规则
+          if (!gitignoreFilter(fullPath, entry.isDirectory())) continue;
+
           if (entry.isDirectory()) {
-            // 跳过排除的目录
-            if (excludeDirs.test(entry.name) || excludeDirs.test(fullPath)) continue;
             walk(fullPath);
           } else if (entry.isFile()) {
             // 文件模式过滤

@@ -12,6 +12,7 @@ const { parseResponse,
         formatToolResult }         = require('./parser');
 const { ConversationManager }      = require('./prompt');
 const backup                       = require('./backup');
+const { createGitignoreFilter }    = require('./gitignore');
 
 // ─────────────────────────────────────────────
 //  Agent 类
@@ -325,7 +326,8 @@ class DeepSeekAgent {
   }
 
   _getWorkingDirListing() {
-    const ignoreDirs = new Set(['node_modules', '.git', 'dist', '.next', 'build', '.deepseek-agent-zhcn-backups', '.vs', '.vscode', 'backups', 'depend', 'lib', '.qm', '.qtcreator', '.uploads', 'debug', 'release', 'obj']);
+    // 使用 .gitignore 规则进行过滤
+    const gitignoreFilter = createGitignoreFilter(config.WORKING_DIR);
     const results = [];
 
     const walk = (dirRel, depth) => {
@@ -339,14 +341,15 @@ class DeepSeekAgent {
       for (const entry of entries) {
         // 构建相对路径，统一使用 POSIX 分隔符并加上 ./ 前缀
         const entryRel = './' + path.join(dirRel, entry.name).split(path.sep).join('/');
+        const fullPath = path.join(config.WORKING_DIR, dirRel, entry.name);
+
         if (entry.isDirectory()) {
-          // 完全跳过忽略的目录（不列出也不递归）
-          if (ignoreDirs.has(entry.name)) continue;
-          // results.push(entryRel);
+          // 使用 .gitignore 规则过滤目录
+          if (!gitignoreFilter(fullPath, true)) continue;
           walk(entryRel, depth + 1);
         } else if (entry.isFile()) {
-          // 跳过 *.lock 文件
-          if (entry.name.endsWith('.lock')) continue;
+          // 使用 .gitignore 规则过滤文件
+          if (!gitignoreFilter(fullPath, false)) continue;
           results.push(entryRel);
         } else {
           // 符号链接等其他类型仍加入
