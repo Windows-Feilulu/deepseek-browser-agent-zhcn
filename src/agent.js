@@ -161,6 +161,42 @@ class DeepSeekAgent {
           continue;
         }
 
+        // ── ai_build.bat 检查与执行 ─────────────────────────────────
+        const buildBatPath = path.join(config.WORKING_DIR, 'ai_build.bat');
+        if (fs.existsSync(buildBatPath)) {
+          logger.info('检测到 ai_build.bat，正在执行...');
+          let buildOutput = '';
+          let buildError = false;
+          try {
+            buildOutput = execSync(buildBatPath, {
+              cwd: config.WORKING_DIR,
+              encoding: 'utf8',
+              timeout: 120_000,
+              maxBuffer: 20 * 1024 * 1024,
+              stdio: ['pipe', 'pipe', 'pipe'],
+            }).trim();
+            logger.info('ai_build.bat 执行成功');
+          } catch (err) {
+            buildError = true;
+            const stdout = (err.stdout || '').trim();
+            const stderr = (err.stderr || '').trim();
+            buildOutput = [
+              stdout && `标准输出:\n${stdout}`,
+              stderr && `标准错误:\n${stderr}`,
+            ].filter(Boolean).join('\n\n') || err.message;
+            logger.warn(`ai_build.bat 执行失败: ${err.message}`);
+          }
+
+          // 将构建结果汇报给 agent，让 agent 决定下一步
+          const buildReport = this.conversation.addToolResult(
+            'ai_build',
+            `ai_build.bat 执行${buildError ? '失败' : '成功'}:\n${buildOutput}`,
+            buildError
+          );
+          await this.browser.sendMessage(buildReport);
+          continue; // 继续循环，等待 agent 的下一步回复
+        }
+
         logger.finalOutput(parsed.content);
 
         // 可选保存对话日志
