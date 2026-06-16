@@ -24,6 +24,8 @@ class DeepSeekAgent {
     this.conversation = new ConversationManager();
     this.options      = options;
     this._running     = false;
+    this._buildPending = false; // 标记是否有待执行的 ai_build.bat
+    this._parseErrorCount = 0;  // 解析错误计数器
     // 为此次对话生成唯一会话 ID
     const sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     backup.setSessionId(sessionId);
@@ -93,6 +95,7 @@ class DeepSeekAgent {
 
       // ── 情况 1: 工具调用 ──────────────────────────────────────────────
       if (parsed.type === 'tool_call') {
+        this._parseErrorCount = 0; // 重置解析错误计数
         logger.toolCall(parsed.name, parsed.args);
 
         let result;
@@ -130,18 +133,30 @@ class DeepSeekAgent {
 
       // ── 情况 2: 解析错误 ────────────────────────────────────────────
       if (parsed.type === 'error') {
-        logger.warn(`解析错误: ${parsed.message}`);
-        const recovery = this.conversation.addToolResult(
-          '系统',
-          `解析错误: ${parsed.message}\n\n请使用有效的 JSON 重试工具调用。`,
-          true
-        );
-        await this.browser.sendMessage(recovery);
-        continue;
+        this._parseErrorCount++;
+        logger.warn(`解析错误 (${this._parseErrorCount}/1): ${parsed.message}`);
+        
+        // 解析错误超过1次，视为任务完成
+        if (this._parseErrorCount >= 1) {
+          logger.warn('解析错误次数过多，视为任务完成');
+          parsed.type = 'final';
+          parsed.content = `任务完成（但解析遇到错误）。\n\n最后错误: ${parsed.message}`;
+          // 继续执行到 final 分支
+        } else {
+          const recovery = this.conversation.addToolResult(
+            '系统',
+            `解析错误: ${parsed.message}\n\n请使用有效的 JSON 重试工具调用。`,
+            true
+          );
+          await this.browser.sendMessage(recovery);
+          continue;
+        }
       }
 
       // ── 情况 3: 最终回复 ─────────────────────────────────────────
       if (parsed.type === 'final') {
+        this._parseErrorCount = 0; // 重置解析错误计数
+        
         // 安全网：如果"最终"回复文本包含我们的解析器遗漏的 tool_call 块
         // （例如被 DOM 搞乱），发送纠正提示。
         const looksLikeToolCall = (
@@ -165,6 +180,35 @@ class DeepSeekAgent {
         // ── ai_build.bat 检查与执行 ─────────────────────────────────
         const buildBatPath = path.join(config.WORKING_DIR, 'ai_build.bat');
         if (fs.existsSync(buildBatPath)) {
+          // 如果之前已经执行过 ai_build，且 agent 再次回复 final，
+          // 说明 agent 已经处理完构建结果，真正完成了
+          if (this._buildPending) {
+            this._buildPending = false;
+            logger.finalOutput(parsed.content);
+
+            // 可选保存对话日志
+            if (this.options.saveLog) {
+              await this._saveConversationLog(task, parsed.content);
+            }
+
+            // 显示备份摘要
+            const backups = backup.listBackups();
+            if (backups.length > 0) {
+              if (config.DEBUG) {
+                console.log('备份清单:');
+                backups.slice(-5).forEach(b => {
+                  console.log(`  - ${b.operation}: ${b.filePath} → ${b.backupPath ? path.basename(b.backupPath) : '(新文件)'}`);
+                });
+                if (backups.length > 5) console.log(`  ... 还有 ${backups.length - 5} 个`);
+              }
+            }
+
+            this._running = false;
+            return parsed.content;
+          }
+
+          // 第一次进入 final，执行 ai_build.bat
+          this._buildPending = true;
           logger.info('检测到 ai_build.bat，正在执行...');
           let buildOutput = '';
           let buildError = false;
