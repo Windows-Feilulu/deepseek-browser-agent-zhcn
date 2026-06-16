@@ -4,6 +4,7 @@
 const fs                           = require('fs');
 const path                         = require('path');
 const { execSync, spawnSync, spawn } = require('child_process');
+const iconv                        = require('iconv-lite');
 const config                       = require('./config');
 const logger                       = require('./logger');
 const DeepSeekBrowser              = require('./browser');
@@ -226,18 +227,17 @@ class DeepSeekAgent {
               child.kill();
             }, timeoutMs);
 
-            // 设置编码为 gbk 以正确处理中文输出
-            child.stdout.setEncoding('ascii');
-            child.stderr.setEncoding('ascii');
-
-            // 实时收集输出并打印到控制台（保证顺序）
+            // 不设置 setEncoding，直接接收 Buffer，然后用 iconv-lite 按 GBK 解码
+            // 以正确处理中文输出（兼容 GBK / GB2312 / GB18030）
             child.stdout.on('data', (data) => {
-              buildOutput += data;
-              process.stdout.write(data);
+              const text = iconv.decode(data, 'gbk');
+              buildOutput += text;
+              process.stdout.write(text);
             });
             child.stderr.on('data', (data) => {
-              buildOutput += data;
-              process.stderr.write(data);
+              const text = iconv.decode(data, 'gbk');
+              buildOutput += text;
+              process.stderr.write(text);
             });
 
             await new Promise((resolve) => {
