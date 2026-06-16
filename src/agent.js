@@ -227,8 +227,8 @@ class DeepSeekAgent {
             }, timeoutMs);
 
             // 设置编码为 gbk 以正确处理中文输出
-            child.stdout.setEncoding('gbk');
-            child.stderr.setEncoding('gbk');
+            child.stdout.setEncoding('ascii');
+            child.stderr.setEncoding('ascii');
 
             // 实时收集输出并打印到控制台（保证顺序）
             child.stdout.on('data', (data) => {
