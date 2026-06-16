@@ -3,7 +3,7 @@
 
 const fs                           = require('fs');
 const path                         = require('path');
-const { execSync }                 = require('child_process');
+const { execSync, spawnSync }      = require('child_process');
 const config                       = require('./config');
 const logger                       = require('./logger');
 const DeepSeekBrowser              = require('./browser');
@@ -214,22 +214,60 @@ class DeepSeekAgent {
           let buildOutput = '';
           let buildError = false;
           try {
-            buildOutput = execSync(buildBatPath, {
+            // 使用 spawn 流式输出，保证 stdout 和 stderr 按实际顺序显示
+            const child = spawn('cmd.exe', ['/c', buildBatPath], {
               cwd: config.WORKING_DIR,
-              encoding: 'utf8',
-              timeout: 120_000,
-              maxBuffer: 20 * 1024 * 1024,
-              stdio: ['pipe', 'pipe', 'pipe'],
-            }).trim();
-            logger.info('ai_build.bat 执行成功');
+              windowsHide: true,
+            });
+            let timedOut = false;
+            const timeoutMs = 1200000;
+            const timeout = setTimeout(() => {
+              timedOut = true;
+              child.kill();
+            }, timeoutMs);
+
+            // 设置编码为 gbk 以正确处理中文输出
+            child.stdout.setEncoding('gbk');
+            child.stderr.setEncoding('gbk');
+
+            // 实时收集输出并打印到控制台（保证顺序）
+            child.stdout.on('data', (data) => {
+              buildOutput += data;
+              process.stdout.write(data);
+            });
+            child.stderr.on('data', (data) => {
+              buildOutput += data;
+              process.stderr.write(data);
+            });
+
+            await new Promise((resolve) => {
+              child.on('close', (code) => {
+                clearTimeout(timeout);
+                buildError = (code !== 0) || timedOut;
+                if (timedOut) {
+                  const timeoutMsg = `\n[超时] 执行时间超过 ${timeoutMs/1000} 秒`;
+                  buildOutput += timeoutMsg;
+                  if (config.DEBUG) process.stderr.write(timeoutMsg);
+                }
+                if (buildError) {
+                  logger.warn(`ai_build.bat 执行失败（退出码 ${code}）`);
+                } else {
+                  logger.info('ai_build.bat 执行成功');
+                }
+                resolve();
+              });
+              child.on('error', (err) => {
+                clearTimeout(timeout);
+                buildError = true;
+                buildOutput = err.message;
+                logger.warn(`ai_build.bat 执行失败: ${err.message}`);
+                resolve();
+              });
+            });
+            buildOutput = buildOutput.trim();
           } catch (err) {
             buildError = true;
-            const stdout = (err.stdout || '').trim();
-            const stderr = (err.stderr || '').trim();
-            buildOutput = [
-              stdout && `标准输出:\n${stdout}`,
-              stderr && `标准错误:\n${stderr}`,
-            ].filter(Boolean).join('\n\n') || err.message;
+            buildOutput = err.message;
             logger.warn(`ai_build.bat 执行失败: ${err.message}`);
           }
 
