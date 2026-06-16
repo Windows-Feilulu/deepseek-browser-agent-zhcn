@@ -3,7 +3,7 @@
 
 const fs                           = require('fs');
 const path                         = require('path');
-const { execSync, spawnSync }      = require('child_process');
+const { execSync, spawnSync, spawn } = require('child_process');
 const config                       = require('./config');
 const logger                       = require('./logger');
 const DeepSeekBrowser              = require('./browser');
