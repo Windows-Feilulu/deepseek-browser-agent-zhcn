@@ -96,6 +96,7 @@ class DeepSeekAgent {
       // ── 情况 1: 工具调用 ──────────────────────────────────────────────
       if (parsed.type === 'tool_call') {
         this._parseErrorCount = 0; // 重置解析错误计数
+        this._buildPending = false; // 重置构建
         logger.toolCall(parsed.name, parsed.args);
 
         let result;
