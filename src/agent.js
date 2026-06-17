@@ -273,8 +273,8 @@ class DeepSeekAgent {
 
           // 将构建结果汇报给 agent，让 agent 决定下一步
           const buildReport = this.conversation.addToolResult(
-            'ai_build',
-            `ai_build.bat 执行${buildError ? '失败' : '成功'}:\n${buildOutput}`,
+            '自动构建',
+            `检测到任务完成，运行自动构建执行${buildError ? '失败' : '成功'}:\n${buildOutput}`,
             buildError
           );
           await this.browser.sendMessage(buildReport);

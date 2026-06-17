@@ -22,7 +22,7 @@ const defaults = {
   WORKING_DIR      : process.cwd(),
 
   // 输出
-  MAX_OUTPUT_LENGTH : 64_000,
+  MAX_OUTPUT_LENGTH : 400_000,
   DEBUG             : false,
 };
 
