@@ -224,7 +224,7 @@ class DeepSeekBrowser {
 
     if (isTextarea) {
       // 标准 textarea — 使用 fill() 更可靠
-      await el.fill(text);
+      await el.fill(text, { timeout: 300000 });
     } else {
       // contenteditable div — 使用 execCommand
       await this.page.evaluate((element, content) => {
