@@ -13,7 +13,7 @@ const defaults = {
   HEADLESS       : false,
 
   // 时间设置
-  RESPONSE_TIMEOUT : 180_000,
+  RESPONSE_TIMEOUT : 180_000_000,
   STABLE_DELAY     : 2_500,
   SEND_DELAY       : 400,
 
