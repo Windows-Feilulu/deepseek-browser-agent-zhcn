@@ -269,7 +269,7 @@ const TOOLS = {
         const results = [];
         const MAX_RESULTS = 300;
 
-        function walk(currentDir, depth = 0) {
+        function walk(currentDir) {
           if (results.length >= MAX_RESULTS) return;
           let entries;
           try {
@@ -290,16 +290,42 @@ const TOOLS = {
             if (!gitignoreFilter(fullPath, entry.isDirectory())) continue;
 
             const relativePath = path.relative(abs, fullPath);
-            results.push(relativePath || entry.name);
+            results.push({
+              name: relativePath || entry.name,
+              isDirectory: entry.isDirectory(),
+              fullPath,
+            });
 
             if (entry.isDirectory()) {
-              walk(fullPath, depth + 1);
+              walk(fullPath);
             }
           }
         }
 
         walk(abs);
-        return results.length > 0 ? results.join('\n') : '(空)';
+
+        if (results.length === 0) return `(空目录: ${dirPath})`;
+
+        // 排序：目录在前，文件在后，按名称排序
+        results.sort((a, b) => {
+          if (a.isDirectory && !b.isDirectory) return -1;
+          if (!a.isDirectory && b.isDirectory) return 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        const lines = results.map(e => {
+          if (e.isDirectory) {
+            return `📁  ${e.name}/`;
+          }
+          try {
+            const size = fs.statSync(e.fullPath).size;
+            return `📄  ${e.name}  ${formatBytes(size)}`;
+          } catch {
+            return `📄  ${e.name}`;
+          }
+        });
+
+        return `[${dirPath} | 递归] — ${results.length} 项\n${lines.join('\n')}`;
       }
 
       const entries = fs.readdirSync(abs, { withFileTypes: true });
