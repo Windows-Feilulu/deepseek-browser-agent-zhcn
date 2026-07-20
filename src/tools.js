@@ -536,7 +536,7 @@ const TOOLS = {
     parameters: {
       pattern: { type: 'string', required: true, description: '要搜索的文本或正则表达式' },
       directory: { type: 'string', required: false, description: '搜索目录（默认: 工作目录）' },
-      file_pattern: { type: 'string', required: false, description: '仅搜索匹配此模式的文件（例如 "*.js"）' },
+      file_pattern: { type: 'string', required: false, description: '仅搜索匹配此正则的文件名（例如 "\\.(h|cpp)$"）' },
       case_sensitive: { type: 'boolean', required: false, description: '区分大小写（默认: false）' },
       context_lines: { type: 'number', required: false, description: '每处匹配周围的上下文行数（默认: 2）' },
     },
@@ -559,16 +559,14 @@ const TOOLS = {
         regex = new RegExp(escaped, flags);
       }
 
-      // 文件模式匹配（glob 转正则）
+      // 文件模式匹配（直接传入正则，后缀匹配始终不区分大小写）
       let fileMatcher = null;
       if (file_pattern) {
-        const globToRegex = (glob) => {
-          const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-            .replace(/\*/g, '.*')
-            .replace(/\?/g, '.');
-          return new RegExp(`^${escaped}$`, 'i');
-        };
-        fileMatcher = globToRegex(file_pattern);
+        try {
+          fileMatcher = new RegExp(file_pattern, 'i');
+        } catch {
+          throw new Error(`无效的文件匹配正则: "${file_pattern}"`);
+        }
       }
 
       const results = [];
