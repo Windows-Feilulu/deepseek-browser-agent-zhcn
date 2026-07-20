@@ -264,6 +264,19 @@ const TOOLS = {
       // 加载 .gitignore 过滤规则
       const gitignoreFilter = createGitignoreFilter(config.WORKING_DIR);
 
+      /** 统一格式化：相对路径用反斜杠，目录带尾杠，文件带大小 */
+      function formatEntry(displayPath, isDirectory, fullPath) {
+        if (isDirectory) {
+          return `📁  ${displayPath}\\`;
+        }
+        try {
+          const size = fs.statSync(fullPath).size;
+          return `📄  ${displayPath}  ${formatBytes(size)}`;
+        } catch {
+          return `📄  ${displayPath}`;
+        }
+      }
+
       if (recursive) {
         // 使用 Node.js 递归遍历，应用 .gitignore 规则
         const results = [];
@@ -278,56 +291,47 @@ const TOOLS = {
             return;
           }
 
+          // 在每个目录内：目录在前、文件在后，各自按名称排序
+          const dirs = [];
+          const files = [];
           for (const entry of entries) {
-            if (results.length >= MAX_RESULTS) break;
-
-            // 隐藏文件过滤
             if (!show_hidden && entry.name.startsWith('.')) continue;
-
             const fullPath = path.join(currentDir, entry.name);
-
-            // 应用 .gitignore 规则
             if (!gitignoreFilter(fullPath, entry.isDirectory())) continue;
-
+            // 统一使用反斜杠显示相对路径
             const relativePath = path.relative(abs, fullPath);
-            results.push({
-              name: relativePath || entry.name,
-              isDirectory: entry.isDirectory(),
-              fullPath,
-            });
-
             if (entry.isDirectory()) {
-              walk(fullPath);
+              dirs.push({ displayPath: relativePath, fullPath });
+            } else {
+              files.push({ displayPath: relativePath, fullPath });
             }
+          }
+          dirs.sort((a, b) => a.displayPath.localeCompare(b.displayPath));
+          files.sort((a, b) => a.displayPath.localeCompare(b.displayPath));
+
+          // 目录先输出，然后紧跟该目录下的文件，再递归子目录
+          for (const d of dirs) {
+            if (results.length >= MAX_RESULTS) break;
+            results.push(formatEntry(d.displayPath, true, d.fullPath));
+          }
+          for (const f of files) {
+            if (results.length >= MAX_RESULTS) break;
+            results.push(formatEntry(f.displayPath, false, f.fullPath));
+          }
+          // 递归进入子目录（子目录内容紧跟其后）
+          for (const d of dirs) {
+            if (results.length >= MAX_RESULTS) break;
+            walk(d.fullPath);
           }
         }
 
         walk(abs);
 
         if (results.length === 0) return `(空目录: ${dirPath})`;
-
-        // 排序：目录在前，文件在后，按名称排序
-        results.sort((a, b) => {
-          if (a.isDirectory && !b.isDirectory) return -1;
-          if (!a.isDirectory && b.isDirectory) return 1;
-          return a.name.localeCompare(b.name);
-        });
-
-        const lines = results.map(e => {
-          if (e.isDirectory) {
-            return `📁  ${e.name}/`;
-          }
-          try {
-            const size = fs.statSync(e.fullPath).size;
-            return `📄  ${e.name}  ${formatBytes(size)}`;
-          } catch {
-            return `📄  ${e.name}`;
-          }
-        });
-
-        return `[${dirPath} | 递归] — ${results.length} 项\n${lines.join('\n')}`;
+        return `[${dirPath} | 递归] — ${results.length} 项\n${results.join('\n')}`;
       }
 
+      // ── 非递归模式 ──
       const entries = fs.readdirSync(abs, { withFileTypes: true });
       let visible = show_hidden ? entries : entries.filter(e => !e.name.startsWith('.'));
 
@@ -337,27 +341,25 @@ const TOOLS = {
         return gitignoreFilter(fullPath, e.isDirectory());
       });
 
-      visible.sort((a, b) => {
-        if (a.isDirectory() && !b.isDirectory()) return -1;
-        if (!a.isDirectory() && b.isDirectory()) return 1;
-        return a.name.localeCompare(b.name);
+      // 目录在前、文件在后，各自按名称排序
+      const dirs = [];
+      const files = [];
+      for (const e of visible) {
+        if (e.isDirectory()) dirs.push(e);
+        else files.push(e);
+      }
+      dirs.sort((a, b) => a.name.localeCompare(b.name));
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      const sorted = [...dirs, ...files];
+
+      if (sorted.length === 0) return `(空目录: ${dirPath})`;
+
+      const lines = sorted.map(e => {
+        const fullPath = path.join(abs, e.name);
+        return formatEntry(e.name, e.isDirectory(), fullPath);
       });
 
-      if (visible.length === 0) return `(空目录: ${dirPath})`;
-
-      const lines = visible.map(e => {
-        if (e.isDirectory()) {
-          return `📁  ${e.name}/`;
-        }
-        try {
-          const size = fs.statSync(path.join(abs, e.name)).size;
-          return `📄  ${e.name}  ${formatBytes(size)}`;
-        } catch {
-          return `📄  ${e.name}`;
-        }
-      });
-
-      return `[${dirPath}] — ${visible.length} 项\n${lines.join('\n')}`;
+      return `[${dirPath}] — ${sorted.length} 项\n${lines.join('\n')}`;
     },
   },
 
