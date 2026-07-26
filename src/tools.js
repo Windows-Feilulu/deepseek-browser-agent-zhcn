@@ -193,7 +193,7 @@ const TOOLS = {
     parameters: {
       path: { type: 'string', required: true, description: '文件路径' },
       regex: { type: 'string', required: true, description: '正则表达式（不含标志）' },
-      replace: { type: 'string', required: true, description: '替换文本，支持 $1, $2' },
+      replace: { type: 'string', required: true, description: '替换文本，支持 $1, $2，不支持转义序列' },
       case_sensitive: { type: 'boolean', required: false, description: '区分大小写（默认: true）' },
     },
     async execute({ path: filePath, regex: pattern, replace, case_sensitive = true }) {
