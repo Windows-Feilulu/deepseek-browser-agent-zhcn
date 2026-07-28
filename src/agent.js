@@ -173,6 +173,7 @@ class DeepSeekAgent {
             '系统',
             '你的回复似乎包含工具调用但无法解析。' +
             '请仅使用 ```tool_call 代码块回复，前后不要有任何文字。',
+            '```tool_call\n{\n  \"name\": \"list_directory\",\n  \"args\": {\n    \"path\": \".\"\n  }\n}\n```',
             true
           );
           await this.browser.sendMessage(retry);
