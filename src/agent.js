@@ -9,7 +9,8 @@ const config                       = require('./config');
 const logger                       = require('./logger');
 const DeepSeekBrowser              = require('./browser');
 const { executeTool }              = require('./tools');
-const { parseResponse,
+const { parseToolCalls,
+        parseResponse,
         formatToolResult }         = require('./parser');
 const { ConversationManager }      = require('./prompt');
 const backup                       = require('./backup');
@@ -92,43 +93,54 @@ class DeepSeekAgent {
       this.conversation.addAssistantMessage(rawResponse);
 
       // 解析回复
-      const parsed = parseResponse(rawResponse);
+      const parsed = parseToolCalls(rawResponse);
 
-      // ── 情况 1: 工具调用 ──────────────────────────────────────────────
-      if (parsed.type === 'tool_call') {
+      // ── 情况 1: 工具调用（一次回复可能包含多个） ─────────────────────
+      if (parsed.type === 'tool_calls') {
         this._parseErrorCount = 0; // 重置解析错误计数
         this._buildPending = false; // 重置构建
-        logger.toolCall(parsed.name, parsed.args);
 
-        let result;
-        let isError = false;
-
-        try {
-          result  = await executeTool(parsed.name, parsed.args);
-          
-          // 检查是否是 ask_user 请求（特殊标记）
-          if (result && typeof result === 'object' && result.__ask_user === true) {
-            // 这是用户交互请求
-            logger.info(`\n🤖 AI 提问: ${result.question}`);
-            
-            // 获取用户输入
-            const userResponse = await this._promptUser(result.question, result.options);
-            
-            // 将用户回复作为工具结果发送回 AI
-            const feedbackMsg = this.conversation.addToolResult(parsed.name, userResponse, false);
-            await this.browser.sendMessage(feedbackMsg);
-            continue;
-          }
-          
-          logger.toolResult(result);
-        } catch (err) {
-          result  = `错误: ${err.message}`;
-          isError = true;
-          logger.toolResult(result, true);
+        const calls = parsed.calls;
+        if (calls.length > 1) {
+          logger.info(`检测到 ${calls.length} 个工具调用，将按次序依次执行`);
         }
 
-        // 反馈结果
-        const feedbackMsg = this.conversation.addToolResult(parsed.name, result, isError);
+        // 按回复中的先后次序依次执行，结果同样按次序返回
+        const results = [];
+        for (let idx = 0; idx < calls.length; idx++) {
+          const call = calls[idx];
+          logger.toolCall(call.name, call.args, idx + 1, calls.length);
+
+          let result;
+          let isError = false;
+
+          try {
+            result = await executeTool(call.name, call.args);
+
+            // 检查是否是 ask_user 请求（特殊标记）
+            if (result && typeof result === 'object' && result.__ask_user === true) {
+              // 这是用户交互请求
+              logger.info(`\n🤖 AI 提问: ${result.question}`);
+
+              // 获取用户输入
+              const userResponse = await this._promptUser(result.question, result.options);
+
+              results.push({ name: call.name, result: userResponse, isError: false });
+              continue;
+            }
+
+            logger.toolResult(result);
+          } catch (err) {
+            result  = `错误: ${err.message}`;
+            isError = true;
+            logger.toolResult(result, true);
+          }
+
+          results.push({ name: call.name, result, isError });
+        }
+
+        // 按次序将全部工具结果回复给 AI
+        const feedbackMsg = this.conversation.addToolResults(results);
         await this.browser.sendMessage(feedbackMsg);
         continue;
       }

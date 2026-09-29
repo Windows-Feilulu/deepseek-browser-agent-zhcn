@@ -2,126 +2,83 @@
 'use strict';
 
 /**
- * 解析原始 DeepSeek 回复字符串。
+ * 解析原始 DeepSeek 回复字符串，提取**所有**工具调用。
+ *
+ * 一次回复中可能包含多个工具调用（多个 ```tool_call 代码块、
+ * 一个包含数组的代码块、多个 XML <tool_call> 等）。
  *
  * 返回以下之一:
- *   { type: 'tool_call', name: string, args: object, raw: string }
- *   { type: 'final',     content: string,            raw: string }
- *   { type: 'error',     message: string,            raw: string }
+ *   { type: 'tool_calls', calls: Array<{name,args,raw}>, raw: string }
+ *   { type: 'final',      content: string,                raw: string }
+ *   { type: 'error',      message: string,                raw: string }
  */
-function parseResponse(rawText) {
+function parseToolCalls(rawText) {
   const text = stripThinkingBlocks(rawText).trim();
+  const calls = [];
+  let fenceError = null;
 
-  // ── 策略 0 (DOM 回退): 裸 "tool_call\n{ ... }" ─────────────────
-  //
-  //  当浏览器 Markdown 渲染器将:
-  //    ```tool_call
-  //    { "name": "write_file", "args": {...} }
-  //    ```
-  //  …转换为 <pre><code class="language-tool_call"> 元素时，我们的 getFullText()
-  //  现在会重建围栏。但如果由于任何原因仍然失败，此策略会捕获原始 DOM 文本，
-  //  其形式如下:
-  //
+  // ── 策略 1: 围栏代码块 ```tool_call / ```json / ```（支持一个回复中包含多个）──
+  //  当浏览器 Markdown 渲染器把围栏转成 <pre><code> 时，getFullText() 会将其重建。
+  const fenceRe = /```([a-zA-Z0-9_-]*)[ \t]*\r?\n?([\s\S]*?)```/g;
+  let fm;
+  while ((fm = fenceRe.exec(text)) !== null) {
+    const lang = (fm[1] || '').toLowerCase();
+    if (lang && lang !== 'tool_call' && lang !== 'json') continue;
+    const body = fm[2];
+    const r = parsePayloadToCalls(body, rawText);
+    if (r.calls.length) {
+      calls.push(...r.calls);
+    } else if (lang === 'tool_call' && r.error && !fenceError) {
+      fenceError = { body: body.trim(), error: r.error };
+    }
+  }
+  if (calls.length) return { type: 'tool_calls', calls, raw: rawText };
+  if (fenceError) {
+    return {
+      type    : 'error',
+      message : 'tool_call 代码块包含无效的 JSON: ' + fenceError.error + '\n内容: ' + fenceError.body.slice(0, 300),
+      raw     : rawText,
+    };
+  }
+
+  // ── 策略 2: XML <tool_call>（支持多个） ───────────────────────────────
+  const xmlRe = /<tool_call[^>]*>\s*(?:<name>([\s\S]*?)<\/name>\s*)?(?:<input>([\s\S]*?)<\/input>|<args>([\s\S]*?)<\/args>)\s*<\/tool_call>/gi;
+  let xm;
+  while ((xm = xmlRe.exec(text)) !== null) {
+    const name     = (xm[1] || '').trim();
+    const inputRaw = stripCodeFences((xm[2] || xm[3] || '').trim());
+    if (!name) continue;
+    const r = tryParseToolCall(name, inputRaw, rawText);
+    if (r.type === 'tool_call') calls.push(r);
+  }
+  if (calls.length) return { type: 'tool_calls', calls, raw: rawText };
+
+  // ── 策略 3 (DOM 回退): 裸 "tool_call\n{ ... }"（支持多个） ──────────────
+  //  当浏览器渲染器把围栏转成 <pre><code> 且重建失败时，DOM 文本可能形如:
   //    tool_call
   //    {
   //      "name": "write_file",
   //      "args": { ... }
   //    }
-  //
-  const bareMatch = text.match(/^tool_call\s*\n([\s\S]+)$/i);
-  if (bareMatch) {
-    const jsonRaw = bareMatch[1].trim();
-    try {
-      const parsed = JSON.parse(jsonRaw);
-      const name   = parsed.name || parsed.tool || parsed.function;
-      const args   = parsed.args || parsed.arguments || parsed.parameters || parsed.input || {};
-      if (name && typeof name === 'string') {
-        return { type: 'tool_call', name, args, raw: rawText };
-      }
-    } catch {
-      const fixed = attemptJsonFix(jsonRaw);
-      if (fixed) {
-        const name = fixed.name || fixed.tool || fixed.function;
-        const args = fixed.args || fixed.arguments || fixed.parameters || fixed.input || {};
-        if (name) return { type: 'tool_call', name, args, raw: rawText };
-      }
+  const bareParts = text.split(/(?:^|\n)[ \t]*tool_call[ \t]*\r?\n/i);
+  if (bareParts.length > 1) {
+    for (let i = 1; i < bareParts.length; i++) {
+      const value = extractLargestJsonValue(bareParts[i]);
+      if (value) calls.push(...jsonValueToCalls(value, rawText));
+    }
+    if (calls.length) return { type: 'tool_calls', calls, raw: rawText };
+  }
+
+  // ── 策略 4: 文本中任意位置包含 "name" 键的 JSON（对象或数组） ──────────
+  if (/["']?(?:name|tool|function)["']?\s*:\s*["'][\w_]+["']/.test(text)) {
+    const value = extractLargestJsonValue(text);
+    if (value) {
+      const cs = jsonValueToCalls(value, rawText);
+      if (cs.length) return { type: 'tool_calls', calls: cs, raw: rawText };
     }
   }
 
-  // ── 策略 1 (主要): ```tool_call 围栏代码块 ─────────────────
-  //  我们的主要格式 — 由 getFullText() 从 <pre><code> 重建。
-  const fencedMatch = text.match(/```tool_call\s*([\s\S]*?)```/i);
-  if (fencedMatch) {
-    const raw = fencedMatch[1].trim();
-    try {
-      const parsed = JSON.parse(raw);
-      const name   = parsed.name || parsed.tool || parsed.function;
-      const args   = parsed.args || parsed.arguments || parsed.parameters || parsed.input || {};
-      if (name && typeof name === 'string') {
-        return { type: 'tool_call', name, args, raw: rawText };
-      }
-    } catch (e) {
-      const fixed = attemptJsonFix(raw);
-      if (fixed) {
-        const name = fixed.name || fixed.tool || fixed.function;
-        const args = fixed.args || fixed.arguments || fixed.parameters || fixed.input || {};
-        if (name) return { type: 'tool_call', name, args, raw: rawText };
-      }
-      return {
-        type    : 'error',
-        message : 'tool_call 代码块包含无效的 JSON: ' + e.message + '\n内容: ' + raw.slice(0, 300),
-        raw     : rawText,
-      };
-    }
-  }
-
-  // ── 策略 2: 包含 "name"/"tool" 键的 ```json 代码块 ──────────────────────
-  const jsonFenceMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (jsonFenceMatch) {
-    try {
-      const parsed = JSON.parse(jsonFenceMatch[1]);
-      const name   = parsed.name || parsed.tool || parsed.function;
-      const args   = parsed.args || parsed.arguments || parsed.parameters || parsed.input || {};
-      if (name && typeof name === 'string') {
-        return { type: 'tool_call', name, args, raw: rawText };
-      }
-    } catch {}
-  }
-
-  // ── 策略 3: XML <tool_call> ───────────────────────────────────────────
-  const xmlMatch = text.match(
-    /<tool_call[^>]*>\s*(?:<name>([\s\S]*?)<\/name>\s*)?(?:<input>([\s\S]*?)<\/input>|<args>([\s\S]*?)<\/args>)\s*<\/tool_call>/i
-  );
-  if (xmlMatch) {
-    const name     = (xmlMatch[1] || '').trim();
-    const inputRaw = stripCodeFences((xmlMatch[2] || xmlMatch[3] || '').trim());
-    if (name) return tryParseToolCall(name, inputRaw, rawText);
-  }
-
-  // ── 策略 4: DOM 剥离了尖括号的 XML ───────────────────
-  const domStrippedMatch = text.match(
-    /tool_call\s+name\s+([\w_]+)\s*\/name\s+input\s*([\s\S]*?)\s*\/input\s*\/tool_call/i
-  );
-  if (domStrippedMatch) {
-    const name     = domStrippedMatch[1].trim();
-    const inputRaw = stripCodeFences(domStrippedMatch[2].trim());
-    return tryParseToolCall(name, inputRaw, rawText);
-  }
-
-  // ── 策略 5: 文本中任何位置包含 "name" 键的 JSON 对象 ──────────
-  //  使用贪婪匹配来找到最外层的 JSON 对象（而非片段）。
-  if (/["'](?:name|tool|function)["']\s*:\s*["'][\w_]+["']/.test(text)) {
-    const jsonObj = extractLargestJsonObject(text);
-    if (jsonObj) {
-      const name = jsonObj.name || jsonObj.tool || jsonObj.function;
-      const args = jsonObj.args || jsonObj.arguments || jsonObj.parameters || jsonObj.input || {};
-      if (name && typeof name === 'string') {
-        return { type: 'tool_call', name, args, raw: rawText };
-      }
-    }
-  }
-
-  // ── 策略 6: 代码块中的 Python 风格函数调用 ──────────────────
+  // ── 策略 5: 代码块中的 Python 风格函数调用 ──────────────────
   const funcMatch = text.match(/```\w*\s*([\w_]+)\(([^)]*)\)\s*```/);
   if (funcMatch) {
     const name    = funcMatch[1];
@@ -137,7 +94,7 @@ function parseResponse(rawText) {
       else if (m[5] !== undefined) args[key] = m[5] === 'true';
     }
     if (Object.keys(args).length > 0) {
-      return { type: 'tool_call', name, args, raw: rawText };
+      return { type: 'tool_calls', calls: [{ name, args, raw: rawText }], raw: rawText };
     }
   }
 
@@ -145,10 +102,24 @@ function parseResponse(rawText) {
   return { type: 'final', content: text, raw: rawText };
 }
 
+/**
+ * 兼容旧接口: 只返回第一个工具调用。
+ * 新的 Agent 循环请使用 parseToolCalls 以支持一次回复中的多个调用。
+ */
+function parseResponse(rawText) {
+  const parsed = parseToolCalls(rawText);
+  if (parsed.type === 'tool_calls') {
+    const first = parsed.calls[0];
+    return { type: 'tool_call', name: first.name, args: first.args, calls: parsed.calls, raw: parsed.raw };
+  }
+  return parsed;
+}
+
 // ─────────────────────────────────────────────
 //  辅助函数
 // ─────────────────────────────────────────────
 
+/** 解析单个 XML/文本工具调用（名称 + JSON 参数） */
 function tryParseToolCall(name, inputRaw, rawText) {
   try {
     const args = JSON.parse(inputRaw);
@@ -165,6 +136,91 @@ function tryParseToolCall(name, inputRaw, rawText) {
       raw     : rawText,
     };
   }
+}
+
+/**
+ * 将一个代码块内容解析为工具调用列表。
+ * 支持单个 JSON 对象、JSON 数组（多个调用）以及常见 JSON 修复。
+ * @returns {{calls: Array, error: string|null}}
+ */
+function parsePayloadToCalls(payload, rawText) {
+  const trimmed = String(payload).trim();
+  if (!trimmed) return { calls: [], error: null };
+
+  // 直接解析
+  try {
+    const value = JSON.parse(trimmed);
+    const calls = jsonValueToCalls(value, rawText);
+    if (calls.length) return { calls, error: null };
+    return { calls: [], error: null };
+  } catch (e) {
+    // 尝试修复常见 JSON 问题
+    const fixed = attemptJsonFix(trimmed);
+    if (fixed !== null) {
+      const calls = jsonValueToCalls(fixed, rawText);
+      if (calls.length) return { calls, error: null };
+      return { calls: [], error: null };
+    }
+    // 回退: 在代码块内扫描多个独立 JSON 对象/数组
+    const scanned = collectJsonValues(trimmed)
+      .flatMap(v => jsonValueToCalls(v, rawText));
+    if (scanned.length) return { calls: scanned, error: null };
+    return { calls: [], error: e.message };
+  }
+}
+
+/**
+ * 将一个已解析的 JSON 值转换为工具调用数组。
+ * 支持单个对象、对象数组，以及 OpenAI 风格的 {type:"function",function:{...}}。
+ */
+function jsonValueToCalls(value, rawText) {
+  if (Array.isArray(value)) {
+    const out = [];
+    for (const item of value) {
+      const call = coerceToolCall(item, rawText);
+      if (call) out.push(call);
+    }
+    return out;
+  }
+  const call = coerceToolCall(value, rawText);
+  return call ? [call] : [];
+}
+
+/**
+ * 判断一个对象是否为工具调用并规范化。
+ * 返回 { name, args, raw } 或 null。
+ */
+function coerceToolCall(obj, rawText) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+
+  // OpenAI 风格: { type: "function", function: { name, arguments } }
+  const src = (obj.function && typeof obj.function === 'object' && !Array.isArray(obj.function))
+    ? obj.function
+    : obj;
+
+  let name = null;
+  for (const key of ['name', 'tool', 'function']) {
+    if (typeof src[key] === 'string' && src[key].trim()) { name = src[key].trim(); break; }
+  }
+  if (!name) return null;
+
+  let args = {};
+  let hasArgs = false;
+  for (const key of ['args', 'arguments', 'parameters', 'input']) {
+    if (src[key] !== undefined) { args = src[key]; hasArgs = true; break; }
+  }
+
+  // 防止误判: 若对象包含大量非工具字段且没有参数键，则不视为工具调用
+  const toolKeys = new Set(['name', 'tool', 'function', 'args', 'arguments', 'parameters', 'input', 'id', 'type']);
+  const onlyToolKeys = Object.keys(obj).every(k => toolKeys.has(k));
+  if (!hasArgs && !onlyToolKeys) return null;
+
+  // 参数为 JSON 字符串时尝试解析
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { /* 保留原始字符串 */ }
+  }
+
+  return { name, args: (args === undefined || args === null) ? {} : args, raw: rawText };
 }
 
 /** 去除 ```json ... ``` 或 ``` ... ``` 围栏 */
@@ -196,50 +252,109 @@ function attemptJsonFix(str) {
 }
 
 /**
- * 从字符串中提取最大的有效 JSON 对象。
- * 使用括号计数方法而非正则表达式，以处理嵌套对象。
+ * 从字符串中提取最大的有效 JSON 值（对象或数组）。
+ * 使用括号计数方法而非正则表达式，以处理嵌套结构。
  */
-function extractLargestJsonObject(text) {
-  let best = null;
+function extractLargestJson(text, openChar, closeChar) {
+  let best    = null;
   let bestLen = 0;
 
   for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '{') continue;
-    let depth   = 0;
-    let inStr   = false;
-    let escape  = false;
+    if (text[i] !== openChar) continue;
+
+    let depth  = 0;
+    let inStr  = false;
+    let escape = false;
+    let end    = -1;
 
     for (let j = i; j < text.length; j++) {
       const ch = text[j];
-      if (escape)          { escape = false; continue; }
+      if (escape)               { escape = false; continue; }
       if (ch === '\\' && inStr) { escape = true; continue; }
-      if (ch === '"')      { inStr = !inStr; continue; }
-      if (inStr)           { continue; }
-      if (ch === '{')      { depth++; }
-      else if (ch === '}') {
+      if (ch === '"')           { inStr = !inStr; continue; }
+      if (inStr)                { continue; }
+      if (ch === openChar)      { depth++; }
+      else if (ch === closeChar) {
         depth--;
-        if (depth === 0) {
-          const candidate = text.slice(i, j + 1);
-          if (candidate.length > bestLen) {
-            try {
-              const parsed = JSON.parse(candidate);
-              best    = parsed;
-              bestLen = candidate.length;
-            } catch {
-              const fixed = attemptJsonFix(candidate);
-              if (fixed && candidate.length > bestLen) {
-                best    = fixed;
-                bestLen = candidate.length;
-              }
-            }
-          }
-          break;
-        }
+        if (depth === 0) { end = j; break; }
       }
+    }
+
+    if (end === -1) continue;
+    const candidate = text.slice(i, end + 1);
+    if (candidate.length <= bestLen) continue;
+
+    let parsed = null;
+    try { parsed = JSON.parse(candidate); }
+    catch { parsed = attemptJsonFix(candidate); }
+
+    if (parsed !== null && typeof parsed === 'object') {
+      best    = parsed;
+      bestLen = candidate.length;
     }
   }
 
   return best;
+}
+
+/** 提取最大的有效 JSON 值（优先对象，其次数组）。 */
+function extractLargestJsonValue(text) {
+  return extractLargestJson(text, '{', '}') || extractLargestJson(text, '[', ']');
+}
+
+/** 兼容旧名: 提取最大的有效 JSON 对象。 */
+function extractLargestJsonObject(text) {
+  return extractLargestJson(text, '{', '}');
+}
+
+/**
+ * 扫描文本，收集其中所有顶层 JSON 对象/数组。
+ * 用于同一代码块内出现多个独立 JSON 对象的情形。
+ */
+function collectJsonValues(text) {
+  const values = [];
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch !== '{' && ch !== '[') { i++; continue; }
+
+    const openChar  = ch;
+    const closeChar = ch === '{' ? '}' : ']';
+    let depth  = 0;
+    let inStr  = false;
+    let escape = false;
+    let end    = -1;
+
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (escape)               { escape = false; continue; }
+      if (c === '\\' && inStr)  { escape = true; continue; }
+      if (c === '"')            { inStr = !inStr; continue; }
+      if (inStr)                { continue; }
+      if (c === openChar)       { depth++; }
+      else if (c === closeChar) {
+        depth--;
+        if (depth === 0) { end = j; break; }
+      }
+    }
+
+    if (end === -1) { i++; continue; }
+
+    const candidate = text.slice(i, end + 1);
+    let parsed = null;
+    try { parsed = JSON.parse(candidate); }
+    catch { parsed = attemptJsonFix(candidate); }
+
+    if (parsed !== null && typeof parsed === 'object') {
+      values.push(parsed);
+      i = end + 1;
+    } else {
+      i++;
+    }
+  }
+
+  return values;
 }
 
 /** 格式化工具结果以便发送回 AI */
@@ -265,6 +380,7 @@ function isAskingQuestion(text) {
 }
 
 module.exports = {
+  parseToolCalls,
   parseResponse,
   formatToolResult,
   stripThinkingBlocks,

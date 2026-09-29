@@ -127,9 +127,12 @@ ${c('cyan','╚═════════════════════�
    * 打印工具调用信息
    * @param {string} name - 工具名称
    * @param {object} args - 工具参数
+   * @param {number} [index] - 当前调用序号（从1开始），用于多个调用的显示
+   * @param {number} [total] - 本次回复中的工具调用总数
    */
-  toolCall(name, args) {
-    console.log(`\n  ${cb('magenta','⚡ 工具调用')} ${c('cyan', `→ ${name}`)}`);
+  toolCall(name, args, index, total) {
+    const seq = (total && total > 1) ? ` ${c('gray', `(${index}/${total})`)}` : '';
+    console.log(`\n  ${cb('magenta','⚡ 工具调用')} ${c('cyan', `→ ${name}`)}${seq}`);
     const preview = jsonPreview(args);
     if (preview.trim()) {
       preview.split('\n').forEach(l => console.log(`  ${c('gray', l)}`));

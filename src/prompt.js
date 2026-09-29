@@ -24,8 +24,11 @@ function buildSystemPrompt() {
   const FENCE = '```';
 
   const lines = [
-    '你是 DeepSeek Agent — 一位专业的AI软件工程师和编程助手，',
-    '运行在基于终端的Agent框架中。你拥有对用户文件系统的直接访问权限，',
+    '你是一个中文DeepSeek Agent。请始终使用中文进行内部推理、分析、规划和最终回答。',
+    '不要用英文思考、打草稿或组织思路。',
+    '只有代码、命令、API、专有名词、英文产品名、错误信息可以保留英文，但解释必须用中文。',
+    '若你发现自己在用英文，请立即切换为中文。',
+    '你运行在真实环境的终端Agent框架中。你拥有对用户文件系统的直接访问权限，',
     '并且可以执行shell命令。',
     '──────运行环境──────',
     '操作系统 : ' + platform,
@@ -47,11 +50,26 @@ function buildSystemPrompt() {
     '  }',
     '}',
     FENCE,
+    '一次回复中调用多个工具的示例（按先后次序执行，结果按相同次序返回）:',
+    FENCE + 'tool_call',
+    '{',
+    '  "name": "工具A",',
+    '  "args": { "参数1": "值1" }',
+    '}',
+    FENCE,
+    FENCE + 'tool_call',
+    '{',
+    '  "name": "工具B",',
+    '  "args": { "参数2": "值2" }',
+    '}',
+    FENCE,
     '重要规则:',
-    '- 每次回复**只能**调用一个工具，不要多个。',
-    '- 内容必须是有效的JSON，且必须包含 "name" 和 "args" 键。',
-    '- 收到工具结果后，要么调用另一个工具，要么给出最终回复。',
-    '- 只有在任务**100%完成**时，才输出纯文本（不使用代码块）。',
+    '- 你可以在**一次回复中调用多个工具**：顺序输出多个 ```tool_call 代码块（每个代码块一个 JSON 对象）。',
+    '- 多个工具调用会按你输出的**先后次序**依次执行，执行结果也会按**相同次序**返回给你。',
+    '- 若多个调用之间**没有依赖关系**，请尽量在同一次回复中一次性给出，以减少往返、提升效率。',
+    '- 若存在**依赖关系**（后一个调用需要前一个的结果），则先只调用前一个，收到结果后再调用下一个。',
+    '- 收到工具结果后，要么继续调用工具，要么给出最终回复。',
+    '- 只有在任务**100%完成**时，输出给予用户的反馈。',
     '──────文件操作（重要）──────',
     '- 创建文件用write_file，删除文件用delete_file，修改文件用edit_file，读取文件用read_file，移动或重命名文件用move_file',
     '- **不要**使用shell命令（echo、del、mkdir、rm、重定向等）来操作文件。',
@@ -137,6 +155,35 @@ class ConversationManager {
       '必须用tool_call代码块调用工具实际完成任务，否则视为完成任务的最终回复。',
     ].join('\n');
 
+    this.messages.push({ role: 'user', content: content });
+    return content;
+  }
+
+  /**
+   * 按次序添加多个工具结果作为用户回合消息（将结果反馈给AI）。
+   * @param {Array<{name:string,result:*,isError?:boolean}>} results
+   * @returns {string} 格式化的工具结果消息
+   */
+  addToolResults(results) {
+    const list  = Array.isArray(results) ? results : [];
+    const total = list.length;
+    const parts = [];
+
+    list.forEach(function(r, i) {
+      if (i > 0) parts.push('');
+      const status = r.isError ? '错误' : '成功';
+      const label  = total > 1
+        ? '[工具结果 ' + (i + 1) + '/' + total + ': ' + r.name + ' | ' + status + ']'
+        : '[工具结果: ' + r.name + ' | ' + status + ']';
+      parts.push(label);
+      parts.push(String(r.result));
+      parts.push('[工具结果结束]');
+    });
+
+    parts.push('');
+    parts.push('必须用tool_call代码块调用工具实际完成任务，否则视为完成任务的最终回复。');
+
+    const content = parts.join('\n');
     this.messages.push({ role: 'user', content: content });
     return content;
   }
